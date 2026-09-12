@@ -2,8 +2,6 @@ module goliath
 
 go 1.27.1
 
-require github.com/princjef/gomarkdoc v1.1.0
-
 require (
 	github.com/Microsoft/go-winio v0.5.0 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
@@ -29,6 +27,7 @@ require (
 	github.com/mitchellh/mapstructure v1.4.1 // indirect
 	github.com/nxadm/tail v1.4.11 // indirect
 	github.com/pelletier/go-toml v1.9.1 // indirect
+	github.com/princjef/gomarkdoc v1.1.0 // indirect
 	github.com/princjef/mageutil v1.0.0 // indirect
 	github.com/princjef/termdiff v0.1.0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
