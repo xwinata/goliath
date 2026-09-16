@@ -8,6 +8,10 @@
 //
 //	q := serialqueue.New(serialqueue.WithCapacity(10))
 //	q.Run(func() { doWork() })
+//
+// Each submission is a single job. To run several as one unit, wrap them:
+//
+//	q.Run(func() { stepA(); stepB() })
 package serialqueue
 
 import (
@@ -25,7 +29,7 @@ type Result int
 const (
 	// Accepted means the job started or joined the backlog.
 	Accepted Result = iota
-	// Rejected means the backlog is full, or the submission was empty.
+	// Rejected means the backlog is full, or the job was nil.
 	Rejected
 )
 
@@ -41,19 +45,19 @@ func (r Result) String() string {
 	}
 }
 
-// batch is one submission: a group of jobs run as a unit, plus the context that
-// can abandon them while they wait and a cancel func to release its resources.
-type batch struct {
+// queued is one submitted job, plus the context that can abandon it while it
+// waits and a cancel func to release that context's resources.
+type queued struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-	jobs   []func()
+	job    func()
 }
 
 // Queue runs jobs serially with a bounded FIFO backlog.
 type Queue struct {
 	mu       sync.Mutex
-	backlog  []batch
-	running  bool // a batch is executing now
+	backlog  []queued
+	running  bool // a job is executing now
 	draining bool // the worker goroutine is alive
 
 	capacity int
@@ -75,42 +79,42 @@ func New(opts ...Option) *Queue {
 	}
 }
 
-// Run submits one or more jobs and returns immediately. The jobs run as a single
-// unit, in order, once earlier submissions finish. It returns Rejected if the
-// backlog is full or jobs is empty. If the queue was created with WithTimeout,
-// the wait for each submission is bounded by that timeout.
-func (q *Queue) Run(jobs ...func()) Result {
-	return q.RunContext(context.Background(), jobs...)
+// Run submits a job and returns immediately. The job runs once earlier
+// submissions finish. It returns Rejected if the backlog is full or job is nil.
+// To run several jobs as one unit, wrap them in a single func. If the queue was
+// created with WithTimeout, the wait is bounded by that timeout.
+func (q *Queue) Run(job func()) Result {
+	return q.RunContext(context.Background(), job)
 }
 
-// RunContext behaves like Run but also drops the queued jobs if ctx is canceled
-// or its deadline passes before they start. A per-queue timeout from WithTimeout
-// still applies; whichever fires first wins. Cancellation only affects jobs
-// still waiting, never a batch that has already started.
-func (q *Queue) RunContext(ctx context.Context, jobs ...func()) Result {
-	if len(jobs) == 0 {
+// RunContext behaves like Run but also drops the job if ctx is canceled or its
+// deadline passes before it starts. A per-queue timeout from WithTimeout still
+// applies; whichever fires first wins. Cancellation only affects a job still
+// waiting, never one that has already started.
+func (q *Queue) RunContext(ctx context.Context, job func()) Result {
+	if job == nil {
 		return Rejected
 	}
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	// Reclaim seats held by batches that were canceled while waiting, then
-	// reject once the backlog (waiting seats) is full. The running batch does
-	// not occupy a seat.
+	// Reclaim seats held by jobs that were canceled while waiting, then reject
+	// once the backlog (waiting seats) is full. The running job does not occupy
+	// a seat.
 	q.prune()
 	if len(q.backlog) >= q.capacity {
 		return Rejected
 	}
 
-	// Start the timeout clock at submission so a batch is dropped if it waits
-	// too long, not merely if it runs too long.
+	// Start the timeout clock at submission so a job is dropped if it waits too
+	// long, not merely if it runs too long.
 	cancel := context.CancelFunc(func() {})
 	if q.timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, q.timeout)
 	}
 
-	q.backlog = append(q.backlog, batch{ctx: ctx, cancel: cancel, jobs: jobs})
+	q.backlog = append(q.backlog, queued{ctx: ctx, cancel: cancel, job: job})
 
 	// Start the worker if it is not already draining the backlog.
 	if !q.draining {
@@ -120,25 +124,25 @@ func (q *Queue) RunContext(ctx context.Context, jobs ...func()) Result {
 	return Accepted
 }
 
-// prune drops waiting batches whose context is already done, releasing their
-// seats and cancel funcs. The caller must hold q.mu.
+// prune drops waiting jobs whose context is already done, releasing their seats
+// and cancel funcs. The caller must hold q.mu.
 func (q *Queue) prune() {
 	kept := q.backlog[:0]
-	for _, b := range q.backlog {
-		if b.ctx.Err() != nil {
-			b.cancel()
+	for _, qd := range q.backlog {
+		if qd.ctx.Err() != nil {
+			qd.cancel()
 			continue
 		}
-		kept = append(kept, b)
+		kept = append(kept, qd)
 	}
-	// Clear the tail so dropped batches are not retained by the backing array.
+	// Clear the tail so dropped jobs are not retained by the backing array.
 	for i := len(kept); i < len(q.backlog); i++ {
-		q.backlog[i] = batch{}
+		q.backlog[i] = queued{}
 	}
 	q.backlog = kept
 }
 
-// worker drains the backlog one batch at a time until it is empty, then exits.
+// worker drains the backlog one job at a time until it is empty, then exits.
 func (q *Queue) worker() {
 	for {
 		q.mu.Lock()
@@ -160,29 +164,22 @@ func (q *Queue) worker() {
 	}
 }
 
-// execute runs a batch unless its context is already done, in which case the
-// batch is dropped. Each job is guarded against panics so one bad job cannot
-// crash the process or stall the queue.
-func (q *Queue) execute(b batch) {
-	defer b.cancel()
+// execute runs a job unless its context is already done, in which case the job
+// is dropped. The job is guarded against panics so one bad job cannot crash the
+// process or stall the queue.
+func (q *Queue) execute(qd queued) {
+	defer qd.cancel()
 
-	if b.ctx.Err() != nil {
+	if qd.ctx.Err() != nil {
 		return // abandoned while waiting
 	}
 
-	for _, job := range b.jobs {
-		q.runOne(job)
-	}
-}
-
-// runOne runs a single job, forwarding any panic to onPanic (if set).
-func (q *Queue) runOne(job func()) {
 	defer func() {
 		if r := recover(); r != nil && q.onPanic != nil {
 			q.onPanic(r)
 		}
 	}()
-	job()
+	qd.job()
 }
 
 // IsRunning reports whether a job is currently running.

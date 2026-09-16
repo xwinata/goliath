@@ -34,30 +34,35 @@ func TestSingleRun(t *testing.T) {
 	}
 }
 
-func TestEmptyRunRejected(t *testing.T) {
+func TestNilJobRejected(t *testing.T) {
 	q := New()
-	if got := q.Run(); got != Rejected {
-		t.Fatalf("empty Run: got %v, want %v", got, Rejected)
+	if got := q.Run(nil); got != Rejected {
+		t.Fatalf("nil Run: got %v, want %v", got, Rejected)
+	}
+	if got := q.RunContext(context.Background(), nil); got != Rejected {
+		t.Fatalf("nil RunContext: got %v, want %v", got, Rejected)
 	}
 }
 
-func TestVariadicJobsRunInOrder(t *testing.T) {
+// A caller batches several steps by wrapping them in one func.
+func TestWrappedBatchRunsInOrder(t *testing.T) {
 	q := New()
 
 	var mu sync.Mutex
 	var log []string
 	done := make(chan struct{})
 
-	q.Run(
-		func() { mu.Lock(); log = append(log, "a"); mu.Unlock() },
-		func() { mu.Lock(); log = append(log, "b"); mu.Unlock() },
-		func() { mu.Lock(); log = append(log, "c"); mu.Unlock(); close(done) },
-	)
+	q.Run(func() {
+		mu.Lock()
+		log = append(log, "a", "b", "c")
+		mu.Unlock()
+		close(done)
+	})
 
 	select {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("batch did not finish in time")
+		t.Fatal("job did not finish in time")
 	}
 
 	mu.Lock()
