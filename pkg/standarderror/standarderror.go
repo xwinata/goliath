@@ -17,6 +17,11 @@
 // than functional options, so every call site names the fields it sets and the
 // zero value of Params yields sensible defaults.
 //
+// When New wraps another *Error, any of Message, Code, and Status left empty on
+// the new error is inherited from the nearest wrapped *Error that sets it. This
+// means re-wrapping only needs to set the fields that change: adding a message
+// leaves the original code and status in place.
+//
 // # Usage
 //
 //	if err := db.Load(ctx, id); err != nil {
@@ -64,15 +69,20 @@ type Params struct {
 	// error chain rather than wrapping an existing one.
 	Err error
 
-	// Message is the contextual message for this error.
+	// Message is the contextual message for this error. When empty and Err
+	// unwraps to another *Error, it is inherited from the nearest ancestor
+	// *Error that has one.
 	Message string
 
 	// Code is the application-level error code (e.g. "USER_NOT_FOUND"). Empty
-	// means no code is set at this level.
+	// means no code is set at this level; when Err unwraps to another *Error,
+	// an empty Code is inherited from the nearest ancestor *Error that sets one.
 	Code string
 
 	// Status is the HTTP status an API should return (e.g. 404). Values outside
-	// 100–599 are ignored, leaving no status set at this level.
+	// 100–599 are ignored, leaving no status set at this level; when Err unwraps
+	// to another *Error, an unset Status is inherited from the nearest ancestor
+	// *Error that sets one.
 	Status int
 
 	// SkipFrames adds to the number of leading stack frames skipped when the
@@ -105,6 +115,11 @@ type Error struct {
 // originates a new error chain; otherwise it wraps params.Err, preserving the
 // chain for errors.Is and errors.As. The stack trace is captured at this call
 // unless the wrapped error already carries one, in which case it is reused.
+//
+// When params.Err unwraps to another *Error, any of Message, Code, and Status
+// left empty on params are inherited from the nearest ancestor *Error that sets
+// them. This lets a caller re-wrap a standard error to add context to one field
+// (say, a message) while the code and status flow up unchanged.
 func New(params Params) *Error {
 	skip := defaultSkip
 	if params.SkipFrames > 0 {
@@ -120,10 +135,28 @@ func New(params Params) *Error {
 		status = params.Status
 	}
 
+	msg := params.Message
+	code := params.Code
+
+	// Inherit empty fields from the nearest wrapped *Error so re-wrapping only
+	// needs to set the fields that change.
+	var parent *Error
+	if errors.As(params.Err, &parent) {
+		if msg == "" {
+			msg = parent.messageValue()
+		}
+		if code == "" {
+			code = parent.Code()
+		}
+		if status == 0 {
+			status = parent.Status()
+		}
+	}
+
 	e := &Error{
-		msg:      params.Message,
+		msg:      msg,
 		cause:    params.Err,
-		code:     params.Code,
+		code:     code,
 		status:   status,
 		skip:     skip,
 		maxDepth: maxDepth,
@@ -134,14 +167,32 @@ func New(params Params) *Error {
 	return e
 }
 
+// messageValue returns the message carried by this error, or, when this error
+// has none of its own, the nearest ancestor *Error's message. It is used when
+// inheriting a message into a newly wrapped error and never walks into
+// non-*Error causes, so it reflects only messages set through this package.
+func (e *Error) messageValue() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	var next *Error
+	if errors.As(e.cause, &next) {
+		return next.messageValue()
+	}
+	return ""
+}
+
 // Error implements the error interface. It renders the message followed by the
-// cause, if any, so the chain reads from outermost to innermost.
+// cause, if any, so the chain reads from outermost to innermost. When the
+// message was inherited from the cause (so it already equals the cause's
+// rendered form), it is not repeated.
 func (e *Error) Error() string {
 	if e.cause != nil {
-		if e.msg == "" {
-			return e.cause.Error()
+		causeMsg := e.cause.Error()
+		if e.msg == "" || e.msg == causeMsg {
+			return causeMsg
 		}
-		return fmt.Sprintf("%s: %v", e.msg, e.cause)
+		return fmt.Sprintf("%s: %v", e.msg, causeMsg)
 	}
 	return e.msg
 }

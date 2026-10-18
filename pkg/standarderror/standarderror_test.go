@@ -86,6 +86,80 @@ func TestOuterCodeAndStatusWin(t *testing.T) {
 	}
 }
 
+func TestMessageInheritedFromCause(t *testing.T) {
+	inner := New(Params{Message: "load user", Code: "USER_NOT_FOUND", Status: 404})
+	// Outer sets only a code; message and status should be inherited.
+	outer := New(Params{Err: inner, Code: "OVERRIDE"})
+
+	if got := outer.Error(); got != "load user" {
+		t.Fatalf("Error() = %q, want inherited message %q without duplication", got, "load user")
+	}
+	if got := outer.Code(); got != "OVERRIDE" {
+		t.Fatalf("Code() = %q, want %q", got, "OVERRIDE")
+	}
+	if got := outer.Status(); got != 404 {
+		t.Fatalf("Status() = %d, want inherited %d", got, 404)
+	}
+}
+
+func TestInheritedFieldsAreStoredOnNewError(t *testing.T) {
+	// Inheritance happens at construction, so a re-wrapped error carries the
+	// values on its own fields even if the chain below it is later inspected
+	// only through this error.
+	inner := New(Params{Message: "inner msg", Code: "INNER", Status: 500})
+	outer := New(Params{Err: inner, Message: "outer msg"})
+
+	if got := outer.Code(); got != "INNER" {
+		t.Fatalf("Code() = %q, want inherited %q", got, "INNER")
+	}
+	if got := outer.Status(); got != 500 {
+		t.Fatalf("Status() = %d, want inherited %d", got, 500)
+	}
+	if got := outer.Error(); got != "outer msg: inner msg" {
+		t.Fatalf("Error() = %q, want %q", got, "outer msg: inner msg")
+	}
+}
+
+func TestInheritanceSkipsNonStandardCause(t *testing.T) {
+	// A plain cause carries no code/status/message to inherit, so empty fields
+	// stay empty.
+	err := New(Params{Err: errors.New("boom")})
+	if got := err.Code(); got != "" {
+		t.Fatalf("Code() = %q, want empty", got)
+	}
+	if got := err.Status(); got != 0 {
+		t.Fatalf("Status() = %d, want 0", got)
+	}
+	if got := err.Error(); got != "boom" {
+		t.Fatalf("Error() = %q, want %q", got, "boom")
+	}
+}
+
+func TestInheritanceAcrossPlainErrorInChain(t *testing.T) {
+	// standarderror -> plain error -> standarderror. errors.As finds the
+	// nearest *Error below, so inheritance reaches through the plain wrapper.
+	base := New(Params{Message: "base", Code: "BASE", Status: 403})
+	plain := errWrap{msg: "mid", err: base}
+	outer := New(Params{Err: plain, Message: "outer"})
+
+	if got := outer.Code(); got != "BASE" {
+		t.Fatalf("Code() = %q, want inherited %q", got, "BASE")
+	}
+	if got := outer.Status(); got != 403 {
+		t.Fatalf("Status() = %d, want inherited %d", got, 403)
+	}
+}
+
+// errWrap is a minimal error that wraps another error, used to test
+// inheritance reaching through a non-*Error link in the chain.
+type errWrap struct {
+	msg string
+	err error
+}
+
+func (e errWrap) Error() string { return e.msg + ": " + e.err.Error() }
+func (e errWrap) Unwrap() error { return e.err }
+
 func TestStackTraceCaptured(t *testing.T) {
 	err := New(Params{Message: "trace me"})
 	frames := err.StackTrace()

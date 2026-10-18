@@ -14,6 +14,8 @@ The code and status travel with the error so transport layers can report them wi
 
 Construction uses a single New constructor that takes a Params struct rather than functional options, so every call site names the fields it sets and the zero value of Params yields sensible defaults.
 
+When New wraps another \*Error, any of Message, Code, and Status left empty on the new error is inherited from the nearest wrapped \*Error that sets it. This means re\-wrapping only needs to set the fields that change: adding a message leaves the original code and status in place.
+
 ### Usage
 
 ```
@@ -52,7 +54,7 @@ if errors.As(err, &se) {
 
 
 <a name="Code"></a>
-## func [Code](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L202>)
+## func [Code](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L253>)
 
 ```go
 func Code(err error) string
@@ -61,7 +63,7 @@ func Code(err error) string
 Code returns the application error code carried by the nearest \*Error in err's chain, or "" when none is present.
 
 <a name="StackTrace"></a>
-## func [StackTrace](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L222>)
+## func [StackTrace](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L273>)
 
 ```go
 func StackTrace(err error) []tracer.Frame
@@ -70,7 +72,7 @@ func StackTrace(err error) []tracer.Frame
 StackTrace returns the stack trace carried by the nearest \*Error in err's chain, or nil when none is present.
 
 <a name="Status"></a>
-## func [Status](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L212>)
+## func [Status](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L263>)
 
 ```go
 func Status(err error) int
@@ -79,7 +81,7 @@ func Status(err error) int
 Status returns the HTTP status carried by the nearest \*Error in err's chain, or 0 when none is present.
 
 <a name="Error"></a>
-## type [Error](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L91-L102>)
+## type [Error](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L101-L112>)
 
 Error is an error carrying a message, an optional cause, a captured stack trace, an application\-level error code, and an HTTP status. Create one with New and inspect it with errors.As.
 
@@ -90,7 +92,7 @@ type Error struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L108>)
+### func [New](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L123>)
 
 ```go
 func New(params Params) *Error
@@ -98,8 +100,10 @@ func New(params Params) *Error
 
 New creates an \*Error from params. When params.Err is nil the result originates a new error chain; otherwise it wraps params.Err, preserving the chain for errors.Is and errors.As. The stack trace is captured at this call unless the wrapped error already carries one, in which case it is reused.
 
+When params.Err unwraps to another \*Error, any of Message, Code, and Status left empty on params are inherited from the nearest ancestor \*Error that sets them. This lets a caller re\-wrap a standard error to add context to one field \(say, a message\) while the code and status flow up unchanged.
+
 <a name="Error.Code"></a>
-### func \(\*Error\) [Code](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L158>)
+### func \(\*Error\) [Code](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L209>)
 
 ```go
 func (e *Error) Code() string
@@ -108,16 +112,16 @@ func (e *Error) Code() string
 Code returns the application\-level error code. When this error does not set one, Code looks down the chain for the nearest \*Error that does and returns its code; it returns "" when none is found.
 
 <a name="Error.Error"></a>
-### func \(\*Error\) [Error](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L139>)
+### func \(\*Error\) [Error](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L189>)
 
 ```go
 func (e *Error) Error() string
 ```
 
-Error implements the error interface. It renders the message followed by the cause, if any, so the chain reads from outermost to innermost.
+Error implements the error interface. It renders the message followed by the cause, if any, so the chain reads from outermost to innermost. When the message was inherited from the cause \(so it already equals the cause's rendered form\), it is not repeated.
 
 <a name="Error.StackTrace"></a>
-### func \(\*Error\) [StackTrace](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L186>)
+### func \(\*Error\) [StackTrace](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L237>)
 
 ```go
 func (e *Error) StackTrace() []tracer.Frame
@@ -126,7 +130,7 @@ func (e *Error) StackTrace() []tracer.Frame
 StackTrace returns the captured call stack. If this error wraps another \*Error, it returns that error's trace so the origin frames are preserved. Otherwise it captures the trace on first call and caches it.
 
 <a name="Error.Status"></a>
-### func \(\*Error\) [Status](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L172>)
+### func \(\*Error\) [Status](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L223>)
 
 ```go
 func (e *Error) Status() int
@@ -135,7 +139,7 @@ func (e *Error) Status() int
 Status returns the HTTP status. When this error does not set one, Status looks down the chain for the nearest \*Error that does and returns its status; it returns 0 when none is found.
 
 <a name="Error.Unwrap"></a>
-### func \(\*Error\) [Unwrap](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L151>)
+### func \(\*Error\) [Unwrap](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L202>)
 
 ```go
 func (e *Error) Unwrap() error
@@ -144,7 +148,7 @@ func (e *Error) Unwrap() error
 Unwrap returns the wrapped cause, enabling errors.Is and errors.As to walk the chain.
 
 <a name="Params"></a>
-## type [Params](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L62-L86>)
+## type [Params](<https://github.com/xwinata/goliath/blob/main/pkg/standarderror/standarderror.go#L67-L96>)
 
 Params configures an Error created by New. The zero value is valid: it produces an error with no cause, no code, no status, and the default trace settings. Only Message is normally required.
 
@@ -154,15 +158,20 @@ type Params struct {
     // error chain rather than wrapping an existing one.
     Err error
 
-    // Message is the contextual message for this error.
+    // Message is the contextual message for this error. When empty and Err
+    // unwraps to another *Error, it is inherited from the nearest ancestor
+    // *Error that has one.
     Message string
 
     // Code is the application-level error code (e.g. "USER_NOT_FOUND"). Empty
-    // means no code is set at this level.
+    // means no code is set at this level; when Err unwraps to another *Error,
+    // an empty Code is inherited from the nearest ancestor *Error that sets one.
     Code string
 
     // Status is the HTTP status an API should return (e.g. 404). Values outside
-    // 100–599 are ignored, leaving no status set at this level.
+    // 100–599 are ignored, leaving no status set at this level; when Err unwraps
+    // to another *Error, an unset Status is inherited from the nearest ancestor
+    // *Error that sets one.
     Status int
 
     // SkipFrames adds to the number of leading stack frames skipped when the
