@@ -50,9 +50,9 @@ func decodeEnvelope(t *testing.T, rec *httptest.ResponseRecorder) envelope {
 
 func TestSuccessEnvelopeAndStatus(t *testing.T) {
 	captureLogs(t)
-	h := Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
+	h := New(Config{}).Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
 		return map[string]string{"name": "alice"}, nil
-	}, Config{})
+	}, RouteConfig{})
 
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -72,14 +72,14 @@ func TestSuccessEnvelopeAndStatus(t *testing.T) {
 func TestRequestIDGeneratedWhenAbsent(t *testing.T) {
 	captureLogs(t)
 	var seen string
-	h := Wrap(func(_ http.ResponseWriter, r *http.Request) (any, error) {
+	h := New(Config{}).Wrap(func(_ http.ResponseWriter, r *http.Request) (any, error) {
 		id, ok := RequestIDFromContext(r.Context())
 		if !ok {
 			t.Fatal("request ID missing from context")
 		}
 		seen = id
 		return nil, nil
-	}, Config{})
+	}, RouteConfig{})
 
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -94,9 +94,9 @@ func TestRequestIDGeneratedWhenAbsent(t *testing.T) {
 
 func TestRequestIDPropagatedFromHeader(t *testing.T) {
 	captureLogs(t)
-	h := Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
+	h := New(Config{}).Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
 		return nil, nil
-	}, Config{})
+	}, RouteConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set(HeaderRequestID, "abc-123")
@@ -109,13 +109,13 @@ func TestRequestIDPropagatedFromHeader(t *testing.T) {
 
 func TestErrorStatusAndErrorCodeHeader(t *testing.T) {
 	captureLogs(t)
-	h := Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
+	h := New(Config{}).Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
 		return nil, standarderror.New(standarderror.Params{
 			Message: "user not found",
 			Code:    "USER_NOT_FOUND",
 			Status:  http.StatusNotFound,
 		})
-	}, Config{})
+	}, RouteConfig{})
 
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -136,9 +136,9 @@ func TestErrorStatusAndErrorCodeHeader(t *testing.T) {
 
 func TestPlainErrorDefaultsToInternalServerError(t *testing.T) {
 	captureLogs(t)
-	h := Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
+	h := New(Config{}).Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
 		return nil, errors.New("boom")
-	}, Config{})
+	}, RouteConfig{})
 
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -161,13 +161,13 @@ func TestPlainErrorDefaultsToInternalServerError(t *testing.T) {
 
 func TestErrorIsLogged(t *testing.T) {
 	buf := captureLogs(t)
-	h := Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
+	h := New(Config{}).Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
 		return nil, standarderror.New(standarderror.Params{
 			Message: "kaboom",
 			Code:    "X",
 			Status:  http.StatusBadGateway,
 		})
-	}, Config{})
+	}, RouteConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set(HeaderRequestID, "rid-1")
@@ -184,9 +184,9 @@ func TestErrorIsLogged(t *testing.T) {
 
 func TestPanicRecovered(t *testing.T) {
 	buf := captureLogs(t)
-	h := Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
+	h := New(Config{}).Wrap(func(http.ResponseWriter, *http.Request) (any, error) {
 		panic("unexpected")
-	}, Config{})
+	}, RouteConfig{})
 
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -214,19 +214,39 @@ func TestPanicRecovered(t *testing.T) {
 	}
 }
 
-func TestWithMessagesOverride(t *testing.T) {
+func TestRouteSuccessMessageOverride(t *testing.T) {
 	captureLogs(t)
-	h := Wrap(
+	h := New(Config{}).Wrap(
 		func(http.ResponseWriter, *http.Request) (any, error) {
 			return nil, nil
 		},
-		Config{SuccessMessage: "created"},
+		RouteConfig{SuccessMessage: "created"},
 	)
 
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/", nil))
 	env := decodeEnvelope(t, rec)
 	if env.Message != "created" {
 		t.Fatalf("message = %q, want %q", env.Message, "created")
+	}
+}
+
+func TestRouteMessageOverridesGlobalDefault(t *testing.T) {
+	captureLogs(t)
+	// Global default success message is "global"; the route overrides it.
+	wp := New(Config{SuccessMessage: "global"})
+	noop := func(http.ResponseWriter, *http.Request) (any, error) { return nil, nil }
+
+	overridden := wp.Wrap(noop, RouteConfig{SuccessMessage: "route"})
+	env := decodeEnvelope(t, do(overridden, httptest.NewRequest(http.MethodGet, "/", nil)))
+	if env.Message != "route" {
+		t.Fatalf("overridden message = %q, want %q", env.Message, "route")
+	}
+
+	// A route with no override inherits the global default.
+	inherited := wp.Wrap(noop, RouteConfig{})
+	env = decodeEnvelope(t, do(inherited, httptest.NewRequest(http.MethodGet, "/", nil)))
+	if env.Message != "global" {
+		t.Fatalf("inherited message = %q, want %q", env.Message, "global")
 	}
 }
 
@@ -239,14 +259,14 @@ func TestContextCarriesRequestID(t *testing.T) {
 
 func TestCustomRequestIDHeader(t *testing.T) {
 	captureLogs(t)
-	h := Wrap(
+	h := New(Config{RequestIDHeader: "X-Trace-Id"}).Wrap(
 		func(_ http.ResponseWriter, r *http.Request) (any, error) {
 			if id, ok := RequestIDFromContext(r.Context()); !ok || id != "trace-9" {
 				t.Fatalf("context request id = %q (%v), want %q", id, ok, "trace-9")
 			}
 			return nil, nil
 		},
-		Config{RequestIDHeader: "X-Trace-Id"},
+		RouteConfig{},
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -264,7 +284,7 @@ func TestCustomRequestIDHeader(t *testing.T) {
 
 func TestCustomErrorCodeHeader(t *testing.T) {
 	captureLogs(t)
-	h := Wrap(
+	h := New(Config{ErrorCodeHeader: "X-App-Error"}).Wrap(
 		func(http.ResponseWriter, *http.Request) (any, error) {
 			return nil, standarderror.New(standarderror.Params{
 				Message: "nope",
@@ -272,7 +292,7 @@ func TestCustomErrorCodeHeader(t *testing.T) {
 				Status:  http.StatusBadRequest,
 			})
 		},
-		Config{ErrorCodeHeader: "X-App-Error"},
+		RouteConfig{},
 	)
 
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -282,5 +302,71 @@ func TestCustomErrorCodeHeader(t *testing.T) {
 	}
 	if got := rec.Header().Get(HeaderErrorCode); got != "" {
 		t.Fatalf("default %s = %q, want empty when overridden", HeaderErrorCode, got)
+	}
+}
+
+// readBodyHandler returns a handler that reads the entire request body and
+// surfaces any read error, letting a test observe the body-cap behavior.
+func readBodyHandler() HandlerFunc {
+	return func(_ http.ResponseWriter, r *http.Request) (any, error) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		return string(b), nil
+	}
+}
+
+func TestBodyCapRejectsOversizedBody(t *testing.T) {
+	captureLogs(t)
+	h := New(Config{MaxBodyBytes: 8}).Wrap(readBodyHandler(), RouteConfig{})
+
+	body := strings.NewReader(strings.Repeat("a", 64))
+	rec := do(h, httptest.NewRequest(http.MethodPost, "/", body))
+
+	// Reading past the cap fails, so the handler returns a (plain) error and
+	// the wrapper responds 500.
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for oversized body", rec.Code)
+	}
+}
+
+func TestBodyCapAllowsBodyWithinLimit(t *testing.T) {
+	captureLogs(t)
+	h := New(Config{MaxBodyBytes: 64}).Wrap(readBodyHandler(), RouteConfig{})
+
+	rec := do(h, httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello")))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d for body within limit", rec.Code, http.StatusOK)
+	}
+	env := decodeEnvelope(t, rec)
+	if env.Data != "hello" {
+		t.Fatalf("data = %#v, want %q", env.Data, "hello")
+	}
+}
+
+func TestBodyCapDefaultApplied(t *testing.T) {
+	captureLogs(t)
+	// Config{} resolves MaxBodyBytes to DefaultMaxBodyBytes.
+	h := New(Config{}).Wrap(readBodyHandler(), RouteConfig{})
+
+	big := strings.NewReader(strings.Repeat("a", int(DefaultMaxBodyBytes)+1))
+	rec := do(h, httptest.NewRequest(http.MethodPost, "/", big))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 past default cap", rec.Code)
+	}
+}
+
+func TestBodyCapDisabledByNegative(t *testing.T) {
+	captureLogs(t)
+	h := New(Config{MaxBodyBytes: -1}).Wrap(readBodyHandler(), RouteConfig{})
+
+	big := strings.Repeat("a", int(DefaultMaxBodyBytes)+1)
+	rec := do(h, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(big)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d with cap disabled", rec.Code, http.StatusOK)
 	}
 }

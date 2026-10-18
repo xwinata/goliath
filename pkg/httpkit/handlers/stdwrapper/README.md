@@ -8,7 +8,7 @@ import "goliath/pkg/httpkit/handlers/stdwrapper"
 
 Package stdwrapper adapts application handlers to a standard HTTP contract. It wraps a handler that returns a value and an error, reads standard request headers, writes a standard JSON response envelope, logs failures, and recovers from panics. It depends only on the standard library plus the in\-repo goliath/pkg/logger, goliath/pkg/tracer, and goliath/pkg/standarderror packages.
 
-A wrapped handler has the signature HandlerFunc: it returns the data to send on success and an error on failure, instead of writing to the http.ResponseWriter itself. The wrapper turns that into an \*http.Handler and takes care of the cross\-cutting concerns:
+A wrapped handler has the signature HandlerFunc: it returns the data to send on success and an error on failure, instead of writing to the http.ResponseWriter itself. Build a Wrapper once with New, passing the service\-wide Config, then call its Wrap method for each route. The wrapper turns a HandlerFunc into an \*http.Handler and takes care of the cross\-cutting concerns:
 
 - Request ID: it reads the request\-ID header \(HeaderRequestID by default, overridable with Config.RequestIDHeader\), generating a random one when absent, stores it on the request context \(retrievable with RequestIDFromContext\), and echoes it back on the same response header.
 - Response envelope: successful responses carry \{"data": ..., "message": ...\}; failed responses carry \{"message": ...\} with the error message. The envelope never includes the application error code.
@@ -16,12 +16,20 @@ A wrapped handler has the signature HandlerFunc: it returns the data to send on 
 - Status mapping: the HTTP status comes from the error's Status when set \(see goliath/pkg/standarderror\), falling back to 500 for errors and 200 for success.
 - Logging: failures and recovered panics are logged with goliath/pkg/logger at error level, including the request ID and \(for standard errors\) the captured stack trace.
 - Panic recovery: a panic in the handler is recovered, logged, and turned into a 500 response so the server stays up.
+- Body limit: the request body is capped with http.MaxBytesReader \(DefaultMaxBodyBytes by default, overridable with Config.MaxBodyBytes, or disabled with a negative value\) before the handler runs, so any body read is bounded against unbounded client input.
+
+Config is service\-wide: the header names, the body limit, and the default response messages are set once in New and shared by every route. RouteConfig carries the per\-route overrides \(currently the success and error messages\); an empty field inherits the global Config value.
 
 ### Usage
 
 ```
+std := stdwrapper.New(stdwrapper.Config{
+    RequestIDHeader: "X-Trace-Id", // service-wide
+    MaxBodyBytes:    2 << 20,
+})
+
 mux := http.NewServeMux()
-mux.Handle("GET /users/{id}", stdwrapper.Wrap(
+mux.Handle("GET /users/{id}", std.Wrap(
     func(w http.ResponseWriter, r *http.Request) (any, error) {
         u, err := store.Load(r.Context(), r.PathValue("id"))
         if err != nil {
@@ -34,22 +42,32 @@ mux.Handle("GET /users/{id}", stdwrapper.Wrap(
         }
         return u, nil
     },
-    stdwrapper.Config{},
+    stdwrapper.RouteConfig{SuccessMessage: "user found"}, // per-route
 ))
 ```
 
-Configure the response messages and header names with a Config struct passed to Wrap; its zero value selects sensible defaults.
+Set service\-wide behavior with the Config passed to New; override per\-route messages with the RouteConfig passed to Wrap. Both zero values select sensible defaults.
 
 ## Index
 
 - [Constants](<#constants>)
+- [func BodyLimitFromContext\(ctx context.Context\) \(limit int64, ok bool\)](<#BodyLimitFromContext>)
 - [func RequestIDFromContext\(ctx context.Context\) \(string, bool\)](<#RequestIDFromContext>)
-- [func Wrap\(h HandlerFunc, cfg Config\) http.Handler](<#Wrap>)
 - [type Config](<#Config>)
 - [type HandlerFunc](<#HandlerFunc>)
+- [type RouteConfig](<#RouteConfig>)
+- [type Wrapper](<#Wrapper>)
+  - [func New\(cfg Config\) \*Wrapper](<#New>)
+  - [func \(wp \*Wrapper\) Wrap\(h HandlerFunc, rc RouteConfig\) http.Handler](<#Wrapper.Wrap>)
 
 
 ## Constants
+
+<a name="DefaultMaxBodyBytes"></a>DefaultMaxBodyBytes is the request body size limit applied when Config.MaxBodyBytes is zero. It guards against unbounded reads from a client. Set Config.MaxBodyBytes to a negative value to disable the cap.
+
+```go
+const DefaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
+```
 
 <a name="HeaderErrorCode"></a>HeaderErrorCode is the default response header carrying the application\-level error code, which is distinct from the HTTP status. Override it per wrapper with Config.ErrorCodeHeader.
 
@@ -63,8 +81,17 @@ const HeaderErrorCode = "X-Error-Code"
 const HeaderRequestID = "X-Request-ID"
 ```
 
+<a name="BodyLimitFromContext"></a>
+## func [BodyLimitFromContext](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/context.go#L44>)
+
+```go
+func BodyLimitFromContext(ctx context.Context) (limit int64, ok bool)
+```
+
+BodyLimitFromContext returns the request\-body byte cap the wrapper already applied, and reports whether a wrapper handled this request at all. A limit of 0 or less means the wrapper deliberately left the body uncapped. Body readers can use ok to decide whether they still need to apply their own cap: when ok is true the body is already bounded \(or intentionally unbounded\) and a second cap would be redundant.
+
 <a name="RequestIDFromContext"></a>
-## func [RequestIDFromContext](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/context.go#L20>)
+## func [RequestIDFromContext](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/context.go#L25>)
 
 ```go
 func RequestIDFromContext(ctx context.Context) (string, bool)
@@ -72,31 +99,15 @@ func RequestIDFromContext(ctx context.Context) (string, bool)
 
 RequestIDFromContext returns the request ID stored on ctx by the wrapper, and reports whether one was present. Handlers invoked through Wrap can use it to include the request ID in their own logs or downstream calls.
 
-<a name="Wrap"></a>
-## func [Wrap](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/stdwrapper.go#L103>)
-
-```go
-func Wrap(h HandlerFunc, cfg Config) http.Handler
-```
-
-Wrap adapts h to the standard contract and returns an http.Handler. The Config customizes messages and header names; its zero value selects the defaults. See the package documentation for the full list of behaviors it adds.
-
 <a name="Config"></a>
-## type [Config](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/options.go#L7-L24>)
+## type [Config](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/options.go#L11-L37>)
 
-Config customizes a wrapper created by Wrap. The zero value is valid: empty fields fall back to the package defaults \(defaultSuccessMessage, defaultErrorMessage, HeaderRequestID, HeaderErrorCode\), so Config\{\} yields a wrapper with standard behavior.
+Config holds the service\-wide settings shared by every handler a Wrapper produces. Create a Wrapper once with New\(Config\{...\}\) and reuse it across routes; per\-route overrides go in RouteConfig passed to Wrap.
+
+The zero value is valid: empty fields fall back to the package defaults \(HeaderRequestID, HeaderErrorCode, DefaultMaxBodyBytes, defaultSuccessMessage, defaultErrorMessage\), so New\(Config\{\}\) yields a wrapper with standard behavior.
 
 ```go
 type Config struct {
-    // SuccessMessage is the envelope message sent on successful responses.
-    // Empty selects defaultSuccessMessage.
-    SuccessMessage string
-
-    // ErrorMessage is the fallback envelope message sent on failures when the
-    // error carries no client-facing message of its own. Empty selects
-    // defaultErrorMessage.
-    ErrorMessage string
-
     // RequestIDHeader is the header read for the incoming request ID and echoed
     // back on the response. Empty selects HeaderRequestID.
     RequestIDHeader string
@@ -104,16 +115,80 @@ type Config struct {
     // ErrorCodeHeader is the response header carrying the application error
     // code. Empty selects HeaderErrorCode.
     ErrorCodeHeader string
+
+    // MaxBodyBytes caps the number of bytes read from the request body, guarding
+    // against unbounded reads from a client. The wrapper swaps r.Body with an
+    // http.MaxBytesReader before invoking the handler, so any body read (for
+    // example via httpkit.DecodeJSON) is bounded and a handler reading past the
+    // limit sees an error. Zero selects DefaultMaxBodyBytes; a negative value
+    // disables the cap.
+    MaxBodyBytes int64
+
+    // SuccessMessage is the default envelope message sent on successful
+    // responses. Empty selects defaultSuccessMessage. A route may override it
+    // with RouteConfig.SuccessMessage.
+    SuccessMessage string
+
+    // ErrorMessage is the default fallback envelope message sent on failures
+    // when the error carries no client-facing message of its own. Empty selects
+    // defaultErrorMessage. A route may override it with RouteConfig.ErrorMessage.
+    ErrorMessage string
 }
 ```
 
 <a name="HandlerFunc"></a>
-## type [HandlerFunc](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/stdwrapper.go#L90>)
+## type [HandlerFunc](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/stdwrapper.go#L112>)
 
 HandlerFunc is the contract for a wrapped handler. It returns the data to send on success and an error on failure, rather than writing the response itself. A nil error means success; the returned data is placed in the response envelope's "data" field \(which is omitted when data is nil\).
 
 ```go
 type HandlerFunc func(w http.ResponseWriter, r *http.Request) (data any, err error)
 ```
+
+<a name="RouteConfig"></a>
+## type [RouteConfig](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/options.go#L42-L50>)
+
+RouteConfig holds per\-route overrides applied on top of a Wrapper's global Config. The zero value is valid and changes nothing: every empty field inherits the Wrapper's corresponding Config value.
+
+```go
+type RouteConfig struct {
+    // SuccessMessage overrides Config.SuccessMessage for this route. Empty
+    // inherits the global value.
+    SuccessMessage string
+
+    // ErrorMessage overrides Config.ErrorMessage for this route. Empty inherits
+    // the global value.
+    ErrorMessage string
+}
+```
+
+<a name="Wrapper"></a>
+## type [Wrapper](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/stdwrapper.go#L131-L133>)
+
+Wrapper adapts handlers to the standard contract using a shared, service\-wide Config. Create it with New and call Wrap for each route. A Wrapper is safe for concurrent use; its resolved config is immutable after New.
+
+```go
+type Wrapper struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="New"></a>
+### func [New](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/stdwrapper.go#L124>)
+
+```go
+func New(cfg Config) *Wrapper
+```
+
+New creates a Wrapper carrying the service\-wide Config. Build one at startup and reuse it across routes; the zero\-value Config selects standard defaults. Per\-route settings are supplied to Wrap via RouteConfig.
+
+<a name="Wrapper.Wrap"></a>
+### func \(\*Wrapper\) [Wrap](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/stdwrapper/stdwrapper.go#L139>)
+
+```go
+func (wp *Wrapper) Wrap(h HandlerFunc, rc RouteConfig) http.Handler
+```
+
+Wrap adapts h to the standard contract and returns an http.Handler. The RouteConfig applies per\-route overrides \(message text\) on top of the Wrapper's global Config; its zero value changes nothing. See the package documentation for the full list of behaviors Wrap adds.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

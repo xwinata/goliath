@@ -7,8 +7,10 @@
 //
 // A wrapped handler has the signature HandlerFunc: it returns the data to send
 // on success and an error on failure, instead of writing to the
-// http.ResponseWriter itself. The wrapper turns that into an *http.Handler and
-// takes care of the cross-cutting concerns:
+// http.ResponseWriter itself. Build a Wrapper once with New, passing the
+// service-wide Config, then call its Wrap method for each route. The wrapper
+// turns a HandlerFunc into an *http.Handler and takes care of the
+// cross-cutting concerns:
 //
 //   - Request ID: it reads the request-ID header (HeaderRequestID by default,
 //     overridable with Config.RequestIDHeader), generating a random one when
@@ -29,11 +31,25 @@
 //     standard errors) the captured stack trace.
 //   - Panic recovery: a panic in the handler is recovered, logged, and turned
 //     into a 500 response so the server stays up.
+//   - Body limit: the request body is capped with http.MaxBytesReader
+//     (DefaultMaxBodyBytes by default, overridable with Config.MaxBodyBytes, or
+//     disabled with a negative value) before the handler runs, so any body read
+//     is bounded against unbounded client input.
+//
+// Config is service-wide: the header names, the body limit, and the default
+// response messages are set once in New and shared by every route. RouteConfig
+// carries the per-route overrides (currently the success and error messages);
+// an empty field inherits the global Config value.
 //
 // # Usage
 //
+//	std := stdwrapper.New(stdwrapper.Config{
+//	    RequestIDHeader: "X-Trace-Id", // service-wide
+//	    MaxBodyBytes:    2 << 20,
+//	})
+//
 //	mux := http.NewServeMux()
-//	mux.Handle("GET /users/{id}", stdwrapper.Wrap(
+//	mux.Handle("GET /users/{id}", std.Wrap(
 //	    func(w http.ResponseWriter, r *http.Request) (any, error) {
 //	        u, err := store.Load(r.Context(), r.PathValue("id"))
 //	        if err != nil {
@@ -46,11 +62,12 @@
 //	        }
 //	        return u, nil
 //	    },
-//	    stdwrapper.Config{},
+//	    stdwrapper.RouteConfig{SuccessMessage: "user found"}, // per-route
 //	))
 //
-// Configure the response messages and header names with a Config struct passed
-// to Wrap; its zero value selects sensible defaults.
+// Set service-wide behavior with the Config passed to New; override per-route
+// messages with the RouteConfig passed to Wrap. Both zero values select
+// sensible defaults.
 package stdwrapper
 
 import (
@@ -83,6 +100,11 @@ const defaultSuccessMessage = "ok"
 // the error carries no client-facing message of its own.
 const defaultErrorMessage = "internal server error"
 
+// DefaultMaxBodyBytes is the request body size limit applied when
+// Config.MaxBodyBytes is zero. It guards against unbounded reads from a client.
+// Set Config.MaxBodyBytes to a negative value to disable the cap.
+const DefaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
+
 // HandlerFunc is the contract for a wrapped handler. It returns the data to
 // send on success and an error on failure, rather than writing the response
 // itself. A nil error means success; the returned data is placed in the
@@ -96,15 +118,29 @@ type envelope struct {
 	Message string `json:"message"`
 }
 
-// Wrap adapts h to the standard contract and returns an http.Handler. The
-// Config customizes messages and header names; its zero value selects the
-// defaults. See the package documentation for the full list of behaviors it
-// adds.
-func Wrap(h HandlerFunc, cfg Config) http.Handler {
-	return &wrapper{handler: h, cfg: cfg.resolved()}
+// New creates a Wrapper carrying the service-wide Config. Build one at startup
+// and reuse it across routes; the zero-value Config selects standard defaults.
+// Per-route settings are supplied to Wrap via RouteConfig.
+func New(cfg Config) *Wrapper {
+	return &Wrapper{cfg: cfg.resolved()}
 }
 
-// wrapper is the http.Handler produced by Wrap.
+// Wrapper adapts handlers to the standard contract using a shared, service-wide
+// Config. Create it with New and call Wrap for each route. A Wrapper is safe
+// for concurrent use; its resolved config is immutable after New.
+type Wrapper struct {
+	cfg resolvedConfig
+}
+
+// Wrap adapts h to the standard contract and returns an http.Handler. The
+// RouteConfig applies per-route overrides (message text) on top of the
+// Wrapper's global Config; its zero value changes nothing. See the package
+// documentation for the full list of behaviors Wrap adds.
+func (wp *Wrapper) Wrap(h HandlerFunc, rc RouteConfig) http.Handler {
+	return &wrapper{handler: h, cfg: wp.cfg.withRoute(rc)}
+}
+
+// wrapper is the http.Handler produced by Wrapper.Wrap.
 type wrapper struct {
 	handler HandlerFunc
 	cfg     resolvedConfig
@@ -120,7 +156,18 @@ func (wr *wrapper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(wr.cfg.requestIDHeader, requestID)
 
 	ctx := withRequestID(r.Context(), requestID)
+	// Record the body cap on the context (even when disabled) so downstream
+	// readers like httpkit.DecodeJSON defer to the wrapper's limit instead of
+	// imposing their own default.
+	ctx = withBodyLimit(ctx, wr.cfg.maxBodyBytes)
 	r = r.WithContext(ctx)
+
+	// Cap the request body so a handler reading it (e.g. via
+	// httpkit.DecodeJSON) cannot be forced into an unbounded allocation. A
+	// resolved limit of 0 means the cap is disabled.
+	if wr.cfg.maxBodyBytes > 0 && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, wr.cfg.maxBodyBytes)
+	}
 
 	defer wr.recoverPanic(ctx, w, requestID)
 

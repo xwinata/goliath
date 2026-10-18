@@ -15,6 +15,11 @@
 //
 //	req.Header.Get(httpkit.Headers.RequestID)
 //	resp.Header.Get(httpkit.Headers.ErrorCode)
+//
+// It also provides DecodeJSON, a generic helper that decodes a request body
+// into a struct and reports failures as a 400 standard error:
+//
+//	body, err := httpkit.DecodeJSON[CreateUser](r)
 package httpkit
 
 import "goliath/pkg/httpkit/handlers/stdwrapper"
