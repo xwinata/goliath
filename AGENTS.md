@@ -28,7 +28,12 @@ Import paths are module-relative, e.g. `import "goliath/pkg/logger"`.
   - `pkg/tracer` — call-stack capture for diagnostics.
   - `pkg/serialqueue` — runs jobs one at a time with a bounded FIFO backlog.
   - `pkg/database` — database helpers.
-  - `pkg/httphandler` — common HTTP endpoints (health, liveness, readiness).
+  - `pkg/httpkit` — net/http presets. `handlers/healthcheck` serves common
+    health, liveness, and readiness endpoints; `handlers/stdwrapper` adapts
+    application handlers to a standard request/response contract (request ID,
+    response envelope, error-code header, logging, panic recovery).
+  - `pkg/standarderror` — errors carrying a message, stack trace (via
+    `pkg/tracer`), an application error code, and an HTTP status.
 - `tools/` — build-time tooling (see "Documentation" below).
 
 As the repo takes on binaries, private packages, configs, and examples, expect
@@ -42,51 +47,74 @@ These are the load-bearing conventions. Match them in any new or modified code.
 ### 1. Minimal dependencies, prefer the standard library
 
 Packages lean on the Go standard library. `logger` and `tracer` have zero
-third-party dependencies; `httphandler` uses only `net/http` and
-`encoding/json`. Do not add a third-party dependency to a `pkg/` package unless
-there is no reasonable stdlib path and the user has agreed. Third-party modules
-in `go.mod` are build/tooling deps, not runtime deps of the library packages.
+third-party dependencies; `httpkit` and `standarderror` use only the standard
+library plus other in-repo `pkg/` packages. Do not add a third-party dependency
+to a `pkg/` package unless there is no reasonable stdlib path and the user has
+agreed. Third-party modules in `go.mod` are build/tooling deps, not runtime deps
+of the library packages.
 
-### 2. Functional options for configuration
+### 2. Parameter struct for configuration
 
-Configurable constructors use the functional-options pattern rather than large
-parameter lists or exported config structs:
+Configurable constructors take a single exported `Config` (or `Params`) struct
+rather than functional options or long positional parameter lists. This favors
+discoverability: every setting shows up by name with its type and doc comment,
+and a struct literal at the call site reads top-to-bottom.
 
-- An **unexported** `options` (or `config`) struct holds resolved settings.
-- A public `type Option func(*options)`.
-- Public `WithX(...) Option` helpers set individual fields.
-- A constructor (`New`, or an `Init`) applies defaults, then the options.
-- Option helpers **validate defensively**: ignore empty/`nil` inputs, clamp
-  out-of-range values to a sane bound, and keep the default when given a
-  no-op value. They never panic on bad input.
+- A public `Config`/`Params` struct holds the settings as exported fields. Its
+  **zero value is valid** and selects sensible defaults, so `New(Config{})`
+  works and callers set only the fields they care about.
+- The constructor (`New`, or an `Init`) resolves the struct into the package's
+  internal state, applying defaults and **defensive validation**: ignore
+  empty/`nil` fields, clamp out-of-range values to a sane bound, keep the
+  default for no-op values, and copy caller-supplied maps/slices rather than
+  retaining them. The constructor never panics on bad input.
+- Keep the resolved form unexported (e.g. an internal `config`/`resolvedConfig`)
+  so it never leaks into the public API. A small `func (c Config) resolved()`
+  method is the usual home for the defaulting/validation logic.
 
 Example shape (from `pkg/serialqueue`):
 
 ```go
-type options struct{ capacity int }
-
-type Option func(*options)
-
-func WithCapacity(n int) Option {
-    return func(o *options) {
-        if n < 1 {
-            n = 1 // clamp, don't panic
-        }
-        o.capacity = n
-    }
+type Config struct {
+    // Capacity is the backlog size. Values below 1 are clamped to 1; zero
+    // selects DefaultCapacity.
+    Capacity int
 }
 
-func New(opts ...Option) *Queue {
-    cfg := options{capacity: DefaultCapacity}
-    for _, opt := range opts {
-        opt(&cfg)
+type resolvedConfig struct{ capacity int }
+
+func (c Config) resolved() resolvedConfig {
+    capacity := c.Capacity
+    switch {
+    case capacity == 0:
+        capacity = DefaultCapacity // zero value -> default
+    case capacity < 1:
+        capacity = 1 // clamp, don't panic
     }
+    return resolvedConfig{capacity: capacity}
+}
+
+func New(cfg Config) *Queue {
+    rc := cfg.resolved()
     // ...
 }
 ```
 
-Exported defaults are named constants (e.g. `DefaultCapacity`,
-`DefaultHealthPath`) so callers can reference them.
+Because the zero value cannot be distinguished from an explicit zero, pick field
+semantics that make the zero value mean "default" (e.g. `Capacity == 0` selects
+`DefaultCapacity`). When a caller genuinely needs a distinct "off" state, add an
+explicit boolean field for it (e.g. `logger.Config.DisableBuiltinWriters`)
+rather than overloading the zero value.
+
+Exported defaults are named constants (e.g. `DefaultCapacity`) so callers can
+reference them. Keep a default unexported when callers are unlikely to need it
+(e.g. the health-check paths in `pkg/httpkit/handlers/healthcheck`).
+
+Do not add functional options (`WithX(...) Option`) to new or existing `pkg/`
+code; the parameter struct is the standard across every configurable
+constructor here (`logger.Init`, `tracer.Trace`, `serialqueue.New`,
+`httpkit/handlers/healthcheck.New`, `httpkit/handlers/stdwrapper.Wrap`, and
+`standarderror.New`).
 
 ### 3. Documentation is part of the code
 
@@ -147,7 +175,7 @@ go vet ./...
 go test ./...
 
 # Test one package, verbose
-go test ./pkg/httphandler/ -v
+go test ./pkg/httpkit/handlers/healthcheck/ -v
 
 # Regenerate all package READMEs from doc comments
 go generate ./tools
@@ -162,8 +190,8 @@ Before considering a change complete:
 3. Doc comments updated for any new or changed exported symbols.
 4. Affected package `README.md` regenerated via `go generate ./tools` (never
    hand-edited).
-5. New `pkg/` code stays stdlib-first and follows the functional-options
-   pattern where it is configurable.
+5. New `pkg/` code stays stdlib-first and uses the parameter-struct pattern
+   (section 2) where it is configurable.
 
 ## Adding code
 
@@ -175,7 +203,8 @@ put in it.
 A new library package under `pkg/<name>` should include:
 
 - `<name>.go` with the package doc comment (`# Usage` + example) and core types.
-- `options.go` if it is configurable (functional options as above).
+- `options.go` if it is configurable, holding the exported `Config`/`Params`
+  struct and its `resolved()` method (parameter struct as in section 2).
 - `<name>_test.go` with behavior-focused tests.
 - A generated `README.md` (produced by `go generate ./tools`, not by hand).
 

@@ -1,0 +1,230 @@
+// Package stdwrapper adapts application handlers to a standard HTTP contract.
+// It wraps a handler that returns a value and an error, reads standard request
+// headers, writes a standard JSON response envelope, logs failures, and
+// recovers from panics. It depends only on the standard library plus the
+// in-repo goliath/pkg/logger, goliath/pkg/tracer, and goliath/pkg/standarderror
+// packages.
+//
+// A wrapped handler has the signature HandlerFunc: it returns the data to send
+// on success and an error on failure, instead of writing to the
+// http.ResponseWriter itself. The wrapper turns that into an *http.Handler and
+// takes care of the cross-cutting concerns:
+//
+//   - Request ID: it reads the request-ID header (HeaderRequestID by default,
+//     overridable with Config.RequestIDHeader), generating a random one when
+//     absent, stores it on the request context (retrievable with
+//     RequestIDFromContext), and echoes it back on the same response header.
+//   - Response envelope: successful responses carry {"data": ...,
+//     "message": ...}; failed responses carry {"message": ...} with the error
+//     message. The envelope never includes the application error code.
+//   - Error code: the application-level error code (from
+//     goliath/pkg/standarderror) is sent on the error-code response header
+//     (HeaderErrorCode by default, overridable with Config.ErrorCodeHeader),
+//     separate from the HTTP status.
+//   - Status mapping: the HTTP status comes from the error's Status when set
+//     (see goliath/pkg/standarderror), falling back to 500 for errors and 200
+//     for success.
+//   - Logging: failures and recovered panics are logged with
+//     goliath/pkg/logger at error level, including the request ID and (for
+//     standard errors) the captured stack trace.
+//   - Panic recovery: a panic in the handler is recovered, logged, and turned
+//     into a 500 response so the server stays up.
+//
+// # Usage
+//
+//	mux := http.NewServeMux()
+//	mux.Handle("GET /users/{id}", stdwrapper.Wrap(
+//	    func(w http.ResponseWriter, r *http.Request) (any, error) {
+//	        u, err := store.Load(r.Context(), r.PathValue("id"))
+//	        if err != nil {
+//	            return nil, standarderror.New(standarderror.Params{
+//	                Err:     err,
+//	                Message: "user not found",
+//	                Code:    "USER_NOT_FOUND",
+//	                Status:  http.StatusNotFound,
+//	            })
+//	        }
+//	        return u, nil
+//	    },
+//	    stdwrapper.Config{},
+//	))
+//
+// Configure the response messages and header names with a Config struct passed
+// to Wrap; its zero value selects sensible defaults.
+package stdwrapper
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"runtime/debug"
+
+	"goliath/pkg/logger"
+	"goliath/pkg/standarderror"
+)
+
+// HeaderRequestID is the default request/response header carrying the request
+// ID. Override it per wrapper with Config.RequestIDHeader.
+const HeaderRequestID = "X-Request-ID"
+
+// HeaderErrorCode is the default response header carrying the application-level
+// error code, which is distinct from the HTTP status. Override it per wrapper
+// with Config.ErrorCodeHeader.
+const HeaderErrorCode = "X-Error-Code"
+
+// defaultSuccessMessage is the envelope message used for successful responses
+// when Config.SuccessMessage is empty.
+const defaultSuccessMessage = "ok"
+
+// defaultErrorMessage is the envelope message used for failed responses when
+// the error carries no client-facing message of its own.
+const defaultErrorMessage = "internal server error"
+
+// HandlerFunc is the contract for a wrapped handler. It returns the data to
+// send on success and an error on failure, rather than writing the response
+// itself. A nil error means success; the returned data is placed in the
+// response envelope's "data" field (which is omitted when data is nil).
+type HandlerFunc func(w http.ResponseWriter, r *http.Request) (data any, err error)
+
+// envelope is the standard JSON response body. Data is omitted on failures and
+// whenever it is nil; Message is always present.
+type envelope struct {
+	Data    any    `json:"data,omitempty"`
+	Message string `json:"message"`
+}
+
+// Wrap adapts h to the standard contract and returns an http.Handler. The
+// Config customizes messages and header names; its zero value selects the
+// defaults. See the package documentation for the full list of behaviors it
+// adds.
+func Wrap(h HandlerFunc, cfg Config) http.Handler {
+	return &wrapper{handler: h, cfg: cfg.resolved()}
+}
+
+// wrapper is the http.Handler produced by Wrap.
+type wrapper struct {
+	handler HandlerFunc
+	cfg     resolvedConfig
+}
+
+// ServeHTTP implements http.Handler. It wires in the request ID, recovers from
+// panics, invokes the wrapped handler, and writes the standard response.
+func (wr *wrapper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	requestID := r.Header.Get(wr.cfg.requestIDHeader)
+	if requestID == "" {
+		requestID = newRequestID()
+	}
+	w.Header().Set(wr.cfg.requestIDHeader, requestID)
+
+	ctx := withRequestID(r.Context(), requestID)
+	r = r.WithContext(ctx)
+
+	defer wr.recoverPanic(ctx, w, requestID)
+
+	data, err := wr.handler(w, r)
+	if err != nil {
+		wr.writeError(ctx, w, requestID, err)
+		return
+	}
+	wr.writeSuccess(w, data)
+}
+
+// writeSuccess writes a 200 response with the data envelope.
+func (wr *wrapper) writeSuccess(w http.ResponseWriter, data any) {
+	writeJSON(w, http.StatusOK, envelope{
+		Data:    data,
+		Message: wr.cfg.successMessage,
+	})
+}
+
+// writeError logs the failure and writes an error response. The HTTP status
+// comes from the error when it carries one (else 500); the application error
+// code, when present, is sent on the configured error-code header.
+func (wr *wrapper) writeError(
+	ctx context.Context,
+	w http.ResponseWriter,
+	requestID string,
+	err error,
+) {
+	status := standarderror.Status(err)
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+
+	if code := standarderror.Code(err); code != "" {
+		w.Header().Set(wr.cfg.errorCodeHeader, code)
+	}
+
+	logger.ErrorContext(ctx, "request failed", err,
+		logger.F("request_id", requestID),
+		logger.F("status", status),
+		logger.F("error_code", standarderror.Code(err)),
+		logger.F("stack", standarderror.StackTrace(err)),
+	)
+
+	writeJSON(w, status, envelope{Message: wr.errorMessage(err)})
+}
+
+// errorMessage chooses the message shown to the client for err. To avoid
+// leaking internal detail from wrapped causes, it surfaces a message only for a
+// *standarderror.Error (the application's own, deliberately client-facing
+// message); any other error yields the configured generic default.
+func (wr *wrapper) errorMessage(err error) string {
+	var se *standarderror.Error
+	if errors.As(err, &se) {
+		if msg := se.Error(); msg != "" {
+			return msg
+		}
+	}
+	return wr.cfg.errorMessage
+}
+
+// recoverPanic recovers a panic from the wrapped handler, logs it with the
+// panic's stack, and writes a 500 response. It is a no-op when there is no
+// panic.
+//
+// The stack is captured with runtime/debug.Stack rather than from a
+// standarderror. A standarderror created here would capture the stack of the
+// recovery site (this deferred function), since the panicking frames have begun
+// to unwind; debug.Stack instead records the full goroutine stack, which still
+// includes the panic's origin while this deferred function runs.
+func (wr *wrapper) recoverPanic(ctx context.Context, w http.ResponseWriter, requestID string) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+
+	err := standarderror.New(standarderror.Params{
+		Message: "panic recovered",
+		Status:  http.StatusInternalServerError,
+	})
+
+	logger.ErrorContext(ctx, "request panicked", err,
+		logger.F("request_id", requestID),
+		logger.F("panic", rec),
+		logger.F("stack", string(debug.Stack())),
+	)
+
+	writeJSON(w, http.StatusInternalServerError, envelope{Message: wr.cfg.errorMessage})
+}
+
+// newRequestID returns a random 128-bit hex identifier. It falls back to a
+// fixed sentinel only if the system entropy source fails, which should not
+// happen in practice.
+func newRequestID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b)
+}
+
+// writeJSON writes body as JSON with the given status code.
+func writeJSON(w http.ResponseWriter, status int, body envelope) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}

@@ -22,7 +22,7 @@ func eventually(cond func() bool, timeout time.Duration) bool {
 }
 
 func TestSingleRun(t *testing.T) {
-	q := New()
+	q := New(Config{})
 
 	done := make(chan struct{})
 	q.Run(func() { close(done) })
@@ -35,7 +35,7 @@ func TestSingleRun(t *testing.T) {
 }
 
 func TestNilJobRejected(t *testing.T) {
-	q := New()
+	q := New(Config{})
 	if got := q.Run(nil); got != Rejected {
 		t.Fatalf("nil Run: got %v, want %v", got, Rejected)
 	}
@@ -46,7 +46,7 @@ func TestNilJobRejected(t *testing.T) {
 
 // A caller batches several steps by wrapping them in one func.
 func TestWrappedBatchRunsInOrder(t *testing.T) {
-	q := New()
+	q := New(Config{})
 
 	var mu sync.Mutex
 	var log []string
@@ -82,7 +82,7 @@ func TestSecondWaitsUntilFirstFinishes(t *testing.T) {
 	var log []string
 	var mu sync.Mutex
 
-	q := New()
+	q := New(Config{})
 
 	job1Started := make(chan struct{})
 	job1Finished := make(chan struct{})
@@ -170,7 +170,7 @@ func TestThirdIsRejectedIfSecondIsWaiting(t *testing.T) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	q := New(WithCapacity(1))
+	q := New(Config{Capacity: 1})
 
 	job1Started := make(chan struct{})
 	job2Submitted := make(chan struct{})
@@ -310,7 +310,7 @@ func TestTimeoutKillsWaitingJob(t *testing.T) {
 		logMu.Unlock()
 	}
 
-	q := New(WithTimeout(200 * time.Millisecond))
+	q := New(Config{Timeout: 200 * time.Millisecond})
 
 	if result1 := q.Run(job1); result1 != Accepted {
 		t.Fatal("job1 should have been accepted")
@@ -382,7 +382,7 @@ func TestTimeoutKillsWaitingJob(t *testing.T) {
 }
 
 func TestContextCancelKillsWaitingJob(t *testing.T) {
-	q := New()
+	q := New(Config{})
 
 	job1Started := make(chan struct{})
 	job1Release := make(chan struct{})
@@ -428,12 +428,12 @@ func TestPanicRecovered(t *testing.T) {
 	var mu sync.Mutex
 	handled := make(chan struct{})
 
-	q := New(WithPanicHandler(func(r any) {
+	q := New(Config{PanicHandler: func(r any) {
 		mu.Lock()
 		got = r
 		mu.Unlock()
 		close(handled)
-	}))
+	}})
 
 	q.Run(func() { panic("boom") })
 
@@ -492,7 +492,7 @@ func TestCronLikeScenario(t *testing.T) {
 		}
 	}
 
-	q := New(WithCapacity(1), WithTimeout(300*time.Millisecond))
+	q := New(Config{Capacity: 1, Timeout: 300 * time.Millisecond})
 
 	var results []Result
 	var wg sync.WaitGroup
@@ -545,7 +545,7 @@ func TestCronLikeScenario(t *testing.T) {
 }
 
 func TestDefaultCapacity(t *testing.T) {
-	q := New()
+	q := New(Config{})
 
 	block := make(chan struct{})
 	started := make(chan struct{})
@@ -577,7 +577,7 @@ func TestDefaultCapacity(t *testing.T) {
 }
 
 func TestCustomCapacityRejectsWhenFull(t *testing.T) {
-	q := New(WithCapacity(2))
+	q := New(Config{Capacity: 2})
 
 	block := make(chan struct{})
 	started := make(chan struct{})
@@ -601,8 +601,8 @@ func TestCustomCapacityRejectsWhenFull(t *testing.T) {
 	close(block)
 }
 
-func TestCapacityClampedToOne(t *testing.T) {
-	q := New(WithCapacity(0)) // clamped to 1
+func TestCapacityOneBoundsBacklog(t *testing.T) {
+	q := New(Config{Capacity: 1})
 
 	block := make(chan struct{})
 	started := make(chan struct{})
@@ -623,8 +623,53 @@ func TestCapacityClampedToOne(t *testing.T) {
 	close(block)
 }
 
+func TestZeroCapacityUsesDefault(t *testing.T) {
+	// With a struct config, the zero value cannot be distinguished from "unset",
+	// so Capacity == 0 selects DefaultCapacity rather than clamping to 1.
+	q := New(Config{Capacity: 0})
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	q.Run(func() {
+		close(started)
+		<-block
+	})
+	<-started
+
+	// DefaultCapacity waiters must all be accepted.
+	for i := 0; i < DefaultCapacity; i++ {
+		if got := q.Run(func() {}); got != Accepted {
+			t.Fatalf("waiter %d: got %v, want Accepted", i, got)
+		}
+	}
+	if got := q.Run(func() {}); got != Rejected {
+		t.Errorf("waiter beyond default capacity: got %v, want Rejected", got)
+	}
+	close(block)
+}
+
+func TestNegativeCapacityClampedToOne(t *testing.T) {
+	q := New(Config{Capacity: -3})
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	q.Run(func() {
+		close(started)
+		<-block
+	})
+	<-started
+
+	if got := q.Run(func() {}); got != Accepted {
+		t.Fatalf("first waiter: got %v, want Accepted", got)
+	}
+	if got := q.Run(func() {}); got != Rejected {
+		t.Errorf("second waiter: got %v, want Rejected", got)
+	}
+	close(block)
+}
+
 func TestBacklogRunsInFIFOOrder(t *testing.T) {
-	q := New(WithCapacity(5))
+	q := New(Config{Capacity: 5})
 
 	var mu sync.Mutex
 	var order []int

@@ -1,20 +1,20 @@
 // Package tracer captures runtime call-stack information for debugging and
 // error diagnostics.
 //
-// Unlike a module-object style API, the entry point is a plain package-level
-// function:
+// The entry point is a plain package-level function that takes a Config:
 //
-//	frames := tracer.Trace()
+//	frames := tracer.Trace(tracer.Config{})
 //
-// Behavior is tuned with functional options:
+// The zero-value Config captures a sensible default stack. Set fields to tune
+// it:
 //
-//	frames := tracer.Trace(
-//		tracer.WithSkip(3),
-//		tracer.WithMaxDepth(10),
-//		tracer.WithFilter(func(f *runtime.Frame) bool {
+//	frames := tracer.Trace(tracer.Config{
+//		Skip:     3,
+//		MaxDepth: 10,
+//		Filter: func(f *runtime.Frame) bool {
 //			return strings.Contains(f.Function, "myapp")
-//		}),
-//	)
+//		},
+//	})
 package tracer
 
 import "runtime"
@@ -35,64 +35,48 @@ const (
 	defaultMaxDepth = 32
 )
 
-// config holds resolved Trace settings. It is unexported; callers configure it
-// through Option values.
-type config struct {
-	skip     int
-	maxDepth int
-	filter   func(*runtime.Frame) bool
+// Config tunes Trace. The zero value is valid: Skip <= 0 keeps the default
+// (skip Trace itself and runtime.Callers so the first frame is Trace's caller),
+// MaxDepth <= 0 keeps the default cap, and a nil Filter captures every frame.
+type Config struct {
+	// Skip is how many leading frames to skip. Values <= 0 keep the default.
+	// Pass a positive value to skip additional frames (for example, from a
+	// helper that wraps Trace).
+	Skip int
+
+	// MaxDepth caps the number of frames captured. Values <= 0 keep the
+	// default.
+	MaxDepth int
+
+	// Filter, when non-nil, keeps only frames for which it returns true.
+	Filter func(*runtime.Frame) bool
 }
 
-// Option customizes Trace behavior.
-type Option func(*config)
-
-// WithSkip sets how many leading frames to skip. Values <= 0 keep the default,
-// which skips Trace itself and runtime.Callers so the first frame is Trace's
-// caller. Pass a positive value to skip additional frames (for example, from a
-// helper that wraps Trace).
-func WithSkip(n int) Option {
-	return func(c *config) {
-		if n > 0 {
-			c.skip = n
-		}
+// resolved returns c with non-positive Skip/MaxDepth replaced by their
+// defaults. Filter is left as-is (nil means capture everything).
+func (c Config) resolved() Config {
+	if c.Skip <= 0 {
+		c.Skip = defaultSkip
 	}
-}
-
-// WithMaxDepth caps the number of frames captured. Values <= 0 keep the default.
-func WithMaxDepth(n int) Option {
-	return func(c *config) {
-		if n > 0 {
-			c.maxDepth = n
-		}
+	if c.MaxDepth <= 0 {
+		c.MaxDepth = defaultMaxDepth
 	}
-}
-
-// WithFilter keeps only frames for which keep returns true. Without a filter,
-// all frames are captured.
-func WithFilter(keep func(*runtime.Frame) bool) Option {
-	return func(c *config) {
-		c.filter = keep
-	}
+	return c
 }
 
 // Trace captures the current call stack and returns the frames.
 //
-// By default it skips Trace itself and runtime.Callers (so the first frame is
-// the caller of Trace), captures up to 32 frames, and includes every frame.
-// Use WithSkip, WithMaxDepth, and WithFilter to change this.
+// With a zero-value Config it skips Trace itself and runtime.Callers (so the
+// first frame is the caller of Trace), captures up to 32 frames, and includes
+// every frame. Set Config.Skip, Config.MaxDepth, and Config.Filter to change
+// this.
 //
 // Each call operates on its own stack snapshot and is safe for concurrent use.
-func Trace(opts ...Option) []Frame {
-	cfg := config{
-		skip:     defaultSkip,
-		maxDepth: defaultMaxDepth,
-	}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
+func Trace(cfg Config) []Frame {
+	cfg = cfg.resolved()
 
-	pcs := make([]uintptr, cfg.maxDepth)
-	n := runtime.Callers(cfg.skip, pcs)
+	pcs := make([]uintptr, cfg.MaxDepth)
+	n := runtime.Callers(cfg.Skip, pcs)
 	if n == 0 {
 		return nil
 	}
@@ -102,7 +86,7 @@ func Trace(opts ...Option) []Frame {
 	for {
 		frame, more := frames.Next()
 
-		if cfg.filter == nil || cfg.filter(&frame) {
+		if cfg.Filter == nil || cfg.Filter(&frame) {
 			out = append(out, Frame{
 				File:     frame.File,
 				Line:     frame.Line,

@@ -10,10 +10,10 @@ import (
 // nested call chain used to assert the captured stack contains each level.
 func helperA() []Frame { return helperB() }
 func helperB() []Frame { return helperC() }
-func helperC() []Frame { return Trace() }
+func helperC() []Frame { return Trace(Config{}) }
 
 func TestTrace_BasicCapture(t *testing.T) {
-	frames := Trace()
+	frames := Trace(Config{})
 
 	if len(frames) == 0 {
 		t.Fatal("expected at least one frame")
@@ -53,7 +53,7 @@ func TestTrace_NestedCalls(t *testing.T) {
 }
 
 func TestTrace_WithMaxDepth(t *testing.T) {
-	frames := Trace(WithMaxDepth(3))
+	frames := Trace(Config{MaxDepth: 3})
 	if len(frames) == 0 {
 		t.Fatal("expected at least one frame")
 	}
@@ -64,7 +64,7 @@ func TestTrace_WithMaxDepth(t *testing.T) {
 
 func TestTrace_WithSkipIncludesTraceItself(t *testing.T) {
 	// Skipping only 1 frame means runtime.Callers' caller (Trace) is included.
-	frames := Trace(WithSkip(1))
+	frames := Trace(Config{Skip: 1})
 
 	found := false
 	for _, f := range frames {
@@ -79,16 +79,16 @@ func TestTrace_WithSkipIncludesTraceItself(t *testing.T) {
 }
 
 func TestTrace_HighSkipReturnsFew(t *testing.T) {
-	frames := Trace(WithSkip(1000))
+	frames := Trace(Config{Skip: 1000})
 	if len(frames) > 2 {
 		t.Errorf("expected very few frames with high skip, got %d", len(frames))
 	}
 }
 
 func TestTrace_WithFilter(t *testing.T) {
-	frames := Trace(WithFilter(func(f *runtime.Frame) bool {
+	frames := Trace(Config{Filter: func(f *runtime.Frame) bool {
 		return strings.Contains(f.Function, "tracer.Test")
-	}))
+	}})
 
 	if len(frames) == 0 {
 		t.Fatal("expected at least one filtered frame")
@@ -101,7 +101,7 @@ func TestTrace_WithFilter(t *testing.T) {
 }
 
 func TestTrace_FilterRejectingAllReturnsEmpty(t *testing.T) {
-	frames := Trace(WithFilter(func(*runtime.Frame) bool { return false }))
+	frames := Trace(Config{Filter: func(*runtime.Frame) bool { return false }})
 	if len(frames) != 0 {
 		t.Errorf("expected no frames when filter rejects all, got %d", len(frames))
 	}
@@ -109,7 +109,7 @@ func TestTrace_FilterRejectingAllReturnsEmpty(t *testing.T) {
 
 func TestTrace_NonPositiveOptionsKeepDefaults(t *testing.T) {
 	// skip<=0 and maxDepth<=0 must be ignored, so defaults still capture frames.
-	frames := Trace(WithSkip(-5), WithMaxDepth(0))
+	frames := Trace(Config{Skip: -5, MaxDepth: 0})
 	if len(frames) == 0 {
 		t.Error("expected defaults to apply and capture frames")
 	}
@@ -121,7 +121,7 @@ func TestTrace_ConcurrentSafe(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		go func() {
 			defer wg.Done()
-			if frames := Trace(); len(frames) == 0 {
+			if frames := Trace(Config{}); len(frames) == 0 {
 				t.Error("expected frames from concurrent Trace")
 			}
 		}()

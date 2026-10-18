@@ -7,12 +7,12 @@
 //
 // # Initialization
 //
-//	logger.Init(
-//	    logger.WithLevel(logger.LevelInfo),
-//	    logger.WithWriters(logger.WriterStdout),
-//	    logger.WithFormat(logger.FormatJSON),
-//	    logger.WithDefaultFields(map[string]any{"app_name": "goliath"}),
-//	)
+//	logger.Init(logger.Config{
+//	    Level:         logger.LevelInfo,
+//	    Writers:       []logger.Writer{logger.WriterStdout},
+//	    Format:        logger.FormatJSON,
+//	    DefaultFields: map[string]any{"app_name": "goliath"},
+//	})
 //
 // The global level is set once at Init and does not change at runtime. To raise
 // or lower verbosity for a specific request or scope, attach a level to the
@@ -60,15 +60,14 @@ func defaultState() *state {
 	return &state{logger: slog.New(handler)}
 }
 
-// Init configures the package-level logger. Calling Init again replaces the
-// previous configuration; any previously opened log file is closed first.
-func Init(opts ...Option) error {
-	cfg := defaultConfig()
-	for _, opt := range opts {
-		opt(&cfg)
-	}
+// Init configures the package-level logger from cfg. A zero-value Config
+// selects the defaults (Info level, JSON to stdout). Calling Init again
+// replaces the previous configuration; any previously opened log file is closed
+// first.
+func Init(cfg Config) error {
+	resolved := cfg.resolved()
 
-	newState, err := buildState(cfg)
+	newState, err := buildState(resolved)
 	if err != nil {
 		return err
 	}

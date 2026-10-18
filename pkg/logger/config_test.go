@@ -2,6 +2,7 @@ package logger
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestLevel_SlogRoundTrip(t *testing.T) {
 
 func TestWithWriters_DisablesBuiltins(t *testing.T) {
 	// No built-in writers and no custom writer -> build error.
-	err := Init(WithWriters())
+	err := Init(Config{DisableBuiltinWriters: true})
 	if err == nil {
 		t.Fatal("expected error when no writers are configured")
 	}
@@ -65,19 +66,22 @@ func TestWithWriters_DisablesBuiltins(t *testing.T) {
 
 func TestWithWriter_NilIgnored(t *testing.T) {
 	// A nil custom writer should be ignored; with no built-ins this errors.
-	if err := Init(WithWriters(), WithWriter(nil)); err == nil {
+	if err := Init(Config{
+		DisableBuiltinWriters: true,
+		CustomWriters:         []io.Writer{nil},
+	}); err == nil {
 		t.Fatal("expected error: nil writer should not count as a destination")
 	}
 }
 
 func TestWithFormat_Text(t *testing.T) {
 	buf := &bytes.Buffer{}
-	if err := Init(
-		WithLevel(LevelInfo),
-		WithWriters(),
-		WithWriter(buf),
-		WithFormat(FormatText),
-	); err != nil {
+	if err := Init(Config{
+		Level:                 LevelInfo,
+		DisableBuiltinWriters: true,
+		CustomWriters:         []io.Writer{buf},
+		Format:                FormatText,
+	}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 

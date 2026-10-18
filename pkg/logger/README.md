@@ -13,12 +13,12 @@ It supports multiple output destinations \(stdout and a daily\-rotated file\) wi
 ### Initialization
 
 ```
-logger.Init(
-    logger.WithLevel(logger.LevelInfo),
-    logger.WithWriters(logger.WriterStdout),
-    logger.WithFormat(logger.FormatJSON),
-    logger.WithDefaultFields(map[string]any{"app_name": "goliath"}),
-)
+logger.Init(logger.Config{
+    Level:         logger.LevelInfo,
+    Writers:       []logger.Writer{logger.WriterStdout},
+    Format:        logger.FormatJSON,
+    DefaultFields: map[string]any{"app_name": "goliath"},
+})
 ```
 
 The global level is set once at Init and does not change at runtime. To raise or lower verbosity for a specific request or scope, attach a level to the context; it takes precedence over the global level for logs made with that context:
@@ -45,30 +45,23 @@ Before Init is called, a default logger writing JSON to stdout at Info level is 
 - [func ErrorContext\(ctx context.Context, msg string, err error, fields ...Field\)](<#ErrorContext>)
 - [func Info\(msg string, fields ...Field\)](<#Info>)
 - [func InfoContext\(ctx context.Context, msg string, fields ...Field\)](<#InfoContext>)
-- [func Init\(opts ...Option\) error](<#Init>)
+- [func Init\(cfg Config\) error](<#Init>)
 - [func Sync\(\) error](<#Sync>)
 - [func Warn\(msg string, fields ...Field\)](<#Warn>)
 - [func WarnContext\(ctx context.Context, msg string, fields ...Field\)](<#WarnContext>)
 - [func WithContextLevel\(ctx context.Context, level Level\) context.Context](<#WithContextLevel>)
+- [type Config](<#Config>)
 - [type Field](<#Field>)
   - [func F\(key string, value any\) Field](<#F>)
 - [type Format](<#Format>)
 - [type Level](<#Level>)
   - [func ContextLevel\(ctx context.Context\) \(Level, bool\)](<#ContextLevel>)
   - [func ParseLevel\(v any\) Level](<#ParseLevel>)
-- [type Option](<#Option>)
-  - [func WithDefaultFields\(fields map\[string\]any\) Option](<#WithDefaultFields>)
-  - [func WithFile\(dir, prefix string\) Option](<#WithFile>)
-  - [func WithFileBuffer\(bufKB, flushSeconds int\) Option](<#WithFileBuffer>)
-  - [func WithFormat\(f Format\) Option](<#WithFormat>)
-  - [func WithLevel\(l Level\) Option](<#WithLevel>)
-  - [func WithWriter\(w io.Writer\) Option](<#WithWriter>)
-  - [func WithWriters\(w ...Writer\) Option](<#WithWriters>)
 - [type Writer](<#Writer>)
 
 
 <a name="Debug"></a>
-## func [Debug](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L95>)
+## func [Debug](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L94>)
 
 ```go
 func Debug(msg string, fields ...Field)
@@ -77,7 +70,7 @@ func Debug(msg string, fields ...Field)
 Debug logs a message at debug level with optional structured fields.
 
 <a name="DebugContext"></a>
-## func [DebugContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L116>)
+## func [DebugContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L115>)
 
 ```go
 func DebugContext(ctx context.Context, msg string, fields ...Field)
@@ -86,7 +79,7 @@ func DebugContext(ctx context.Context, msg string, fields ...Field)
 DebugContext logs at debug level, honoring any context\-attached level.
 
 <a name="Error"></a>
-## func [Error](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L111>)
+## func [Error](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L110>)
 
 ```go
 func Error(msg string, err error, fields ...Field)
@@ -95,7 +88,7 @@ func Error(msg string, err error, fields ...Field)
 Error logs a message at error level. The err is attached under the "error" key when non\-nil.
 
 <a name="ErrorContext"></a>
-## func [ErrorContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L132>)
+## func [ErrorContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L131>)
 
 ```go
 func ErrorContext(ctx context.Context, msg string, err error, fields ...Field)
@@ -104,7 +97,7 @@ func ErrorContext(ctx context.Context, msg string, err error, fields ...Field)
 ErrorContext logs at error level, honoring any context\-attached level. The err is attached under the "error" key when non\-nil.
 
 <a name="Info"></a>
-## func [Info](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L100>)
+## func [Info](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L99>)
 
 ```go
 func Info(msg string, fields ...Field)
@@ -113,7 +106,7 @@ func Info(msg string, fields ...Field)
 Info logs a message at info level with optional structured fields.
 
 <a name="InfoContext"></a>
-## func [InfoContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L121>)
+## func [InfoContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L120>)
 
 ```go
 func InfoContext(ctx context.Context, msg string, fields ...Field)
@@ -122,16 +115,16 @@ func InfoContext(ctx context.Context, msg string, fields ...Field)
 InfoContext logs at info level, honoring any context\-attached level.
 
 <a name="Init"></a>
-## func [Init](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L65>)
+## func [Init](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L67>)
 
 ```go
-func Init(opts ...Option) error
+func Init(cfg Config) error
 ```
 
-Init configures the package\-level logger. Calling Init again replaces the previous configuration; any previously opened log file is closed first.
+Init configures the package\-level logger from cfg. A zero\-value Config selects the defaults \(Info level, JSON to stdout\). Calling Init again replaces the previous configuration; any previously opened log file is closed first.
 
 <a name="Sync"></a>
-## func [Sync](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L138>)
+## func [Sync](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L137>)
 
 ```go
 func Sync() error
@@ -140,7 +133,7 @@ func Sync() error
 Sync flushes any buffered output \(currently the file writer\). It is safe to call even when logging to stdout only.
 
 <a name="Warn"></a>
-## func [Warn](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L105>)
+## func [Warn](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L104>)
 
 ```go
 func Warn(msg string, fields ...Field)
@@ -149,7 +142,7 @@ func Warn(msg string, fields ...Field)
 Warn logs a message at warn level with optional structured fields.
 
 <a name="WarnContext"></a>
-## func [WarnContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L126>)
+## func [WarnContext](<https://github.com/xwinata/goliath/blob/main/pkg/logger/logger.go#L125>)
 
 ```go
 func WarnContext(ctx context.Context, msg string, fields ...Field)
@@ -165,6 +158,55 @@ func WithContextLevel(ctx context.Context, level Level) context.Context
 ```
 
 WithContextLevel returns a copy of ctx carrying a log level that overrides the global level for logs made with that context. Use it to raise or lower verbosity for a single request or scope without affecting the rest of the process.
+
+<a name="Config"></a>
+## type [Config](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L135-L175>)
+
+Config customizes the logger via Init. The zero value is valid and yields the defaults: Info level, JSON format, output to stdout only, and the default daily\-rotated file settings \(used only when WriterFile is selected\).
+
+```go
+type Config struct {
+    // Level is the minimum log level. The zero value is LevelInfo.
+    Level Level
+
+    // Format is the encoding used by all writers. The zero value is FormatJSON.
+    Format Format
+
+    // Writers selects the built-in output destinations. When nil, the default
+    // (WriterStdout) is used. To emit to custom writers only, leave this nil
+    // and set DisableBuiltinWriters.
+    Writers []Writer
+
+    // DisableBuiltinWriters drops the built-in destinations entirely, so output
+    // goes only to CustomWriters. Use it when routing logs solely to a custom
+    // sink (or a buffer in tests). It takes precedence over Writers.
+    DisableBuiltinWriters bool
+
+    // CustomWriters are arbitrary io.Writer destinations that receive output in
+    // the configured format, alongside any built-in Writers. Nil entries are
+    // ignored.
+    CustomWriters []io.Writer
+
+    // DefaultFields are attached to every log entry. The zero value adds none.
+    DefaultFields map[string]any
+
+    // FileDir is the directory for the daily-rotated file writer. Empty keeps
+    // the default ("./logs/"). Used only when WriterFile is selected.
+    FileDir string
+
+    // FilePrefix is the base file name for the file writer (a date and .log
+    // suffix are appended). Empty keeps the default ("app" or "app-<host>").
+    FilePrefix string
+
+    // FileBufferKB tunes the file writer's buffer size in KB. Values <= 0 keep
+    // the default (64).
+    FileBufferKB int
+
+    // FileFlushSeconds tunes the file writer's flush interval in seconds.
+    // Values <= 0 keep the default (1).
+    FileFlushSeconds int
+}
+```
 
 <a name="Field"></a>
 ## type [Field](<https://github.com/xwinata/goliath/blob/main/pkg/logger/field.go#L8-L11>)
@@ -253,78 +295,6 @@ func ParseLevel(v any) Level
 
 ParseLevel resolves a string, int, or Level into a Level. Unknown values fall back to LevelInfo.
 
-<a name="Option"></a>
-## type [Option](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L133>)
-
-Option customizes the logger via Init.
-
-```go
-type Option func(*config)
-```
-
-<a name="WithDefaultFields"></a>
-### func [WithDefaultFields](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L162>)
-
-```go
-func WithDefaultFields(fields map[string]any) Option
-```
-
-WithDefaultFields sets fields attached to every log entry.
-
-<a name="WithFile"></a>
-### func [WithFile](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L168>)
-
-```go
-func WithFile(dir, prefix string) Option
-```
-
-WithFile configures the daily\-rotated file writer. dir is the directory, prefix is the base file name \(a date and .log suffix are appended\).
-
-<a name="WithFileBuffer"></a>
-### func [WithFileBuffer](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L181>)
-
-```go
-func WithFileBuffer(bufKB, flushSeconds int) Option
-```
-
-WithFileBuffer tunes the file writer's buffer size \(KB\) and flush interval \(seconds\). Non\-positive values keep the defaults.
-
-<a name="WithFormat"></a>
-### func [WithFormat](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L139>)
-
-```go
-func WithFormat(f Format) Option
-```
-
-WithFormat sets the encoding used by all writers \(JSON or text\).
-
-<a name="WithLevel"></a>
-### func [WithLevel](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L136>)
-
-```go
-func WithLevel(l Level) Option
-```
-
-WithLevel sets the minimum log level.
-
-<a name="WithWriter"></a>
-### func [WithWriter](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L153>)
-
-```go
-func WithWriter(w io.Writer) Option
-```
-
-WithWriter adds an arbitrary io.Writer as an output destination, using the configured format. It can be combined with WriterStdout and WriterFile and is useful for routing logs to a custom sink \(or a buffer in tests\).
-
-<a name="WithWriters"></a>
-### func [WithWriters](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L144>)
-
-```go
-func WithWriters(w ...Writer) Option
-```
-
-WithWriters sets the built\-in output destinations, replacing the default \(WriterStdout\). Pass no arguments to disable the built\-in destinations entirely, e.g. when routing output solely through WithWriter.
-
 <a name="Writer"></a>
 ## type [Writer](<https://github.com/xwinata/goliath/blob/main/pkg/logger/config.go#L82>)
 
@@ -338,7 +308,7 @@ type Writer int
 
 ```go
 const (
-    // WriterStdout writes to stdout. Use WithFormat to choose JSON (default,
+    // WriterStdout writes to stdout. Set Config.Format to choose JSON (default,
     // for containers) or text (human-readable, for development).
     WriterStdout Writer = iota
     // WriterFile writes to a daily-rotated file using the configured format.

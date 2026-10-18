@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -29,16 +30,16 @@ func parseLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 
 // initBuf initializes the logger to write JSON into a fresh buffer at the given
 // level, disabling the built-in stdout/file writers.
-func initBuf(t *testing.T, level Level, opts ...Option) *bytes.Buffer {
+func initBuf(t *testing.T, level Level, defaultFields map[string]any) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
-	all := append([]Option{
-		WithLevel(level),
-		WithWriters(), // disable stdout/file
-		WithWriter(buf),
-		WithFormat(FormatJSON),
-	}, opts...)
-	if err := Init(all...); err != nil {
+	if err := Init(Config{
+		Level:                 level,
+		DisableBuiltinWriters: true, // disable stdout/file
+		CustomWriters:         []io.Writer{buf},
+		Format:                FormatJSON,
+		DefaultFields:         defaultFields,
+	}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	return buf
@@ -71,7 +72,7 @@ func TestMethods_RespectGlobalLevel(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			buf := initBuf(t, tc.level)
+			buf := initBuf(t, tc.level, nil)
 
 			Debug("dbg")
 			Info("inf")
@@ -87,7 +88,7 @@ func TestMethods_RespectGlobalLevel(t *testing.T) {
 }
 
 func TestContextMethods_RespectGlobalLevel(t *testing.T) {
-	buf := initBuf(t, LevelWarn)
+	buf := initBuf(t, LevelWarn, nil)
 	ctx := context.Background()
 
 	DebugContext(ctx, "dbg")
@@ -107,7 +108,7 @@ func TestContextMethods_RespectGlobalLevel(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestContextLevel_AppliesToSingleCallOnly(t *testing.T) {
-	buf := initBuf(t, LevelInfo)
+	buf := initBuf(t, LevelInfo, nil)
 
 	// A context lowered to Debug lets a debug line through...
 	dbgCtx := WithContextLevel(context.Background(), LevelDebug)
@@ -127,7 +128,7 @@ func TestContextLevel_AppliesToSingleCallOnly(t *testing.T) {
 
 func TestContextLevel_LowersThresholdForSingleCall(t *testing.T) {
 	// Start strict: only errors pass under the global level.
-	buf := initBuf(t, LevelError)
+	buf := initBuf(t, LevelError, nil)
 
 	// A context lowered to Debug lets a debug line through for that call only.
 	dbgCtx := WithContextLevel(context.Background(), LevelDebug)
@@ -152,10 +153,10 @@ func TestContextLevel_LowersThresholdForSingleCall(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDefaultFields_AlwaysPresent(t *testing.T) {
-	buf := initBuf(t, LevelDebug, WithDefaultFields(map[string]any{
+	buf := initBuf(t, LevelDebug, map[string]any{
 		"app_name": "goliath",
 		"app_env":  "test",
-	}))
+	})
 
 	Debug("d", F("k", "v"))
 	Info("i")
@@ -188,7 +189,7 @@ func TestDefaultFields_AlwaysPresent(t *testing.T) {
 }
 
 func TestError_NilErrorOmitsErrorKey(t *testing.T) {
-	buf := initBuf(t, LevelDebug)
+	buf := initBuf(t, LevelDebug, nil)
 	Error("no-err", nil)
 
 	recs := parseLines(t, buf)
@@ -207,13 +208,12 @@ func TestError_NilErrorOmitsErrorKey(t *testing.T) {
 func TestMultipleWriters_ReceiveSameRecord(t *testing.T) {
 	a := &bytes.Buffer{}
 	b := &bytes.Buffer{}
-	if err := Init(
-		WithLevel(LevelInfo),
-		WithWriters(), // disable stdout/file
-		WithWriter(a),
-		WithWriter(b),
-		WithFormat(FormatJSON),
-	); err != nil {
+	if err := Init(Config{
+		Level:                 LevelInfo,
+		DisableBuiltinWriters: true, // disable stdout/file
+		CustomWriters:         []io.Writer{a, b},
+		Format:                FormatJSON,
+	}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
@@ -264,13 +264,13 @@ func (b *lockedBuffer) String() string {
 
 func TestConcurrent_NoLostOrGarbledRecords(t *testing.T) {
 	sink := &lockedBuffer{}
-	if err := Init(
-		WithLevel(LevelDebug),
-		WithWriters(), // disable stdout/file
-		WithWriter(sink),
-		WithFormat(FormatJSON),
-		WithDefaultFields(map[string]any{"app": "goliath"}),
-	); err != nil {
+	if err := Init(Config{
+		Level:                 LevelDebug,
+		DisableBuiltinWriters: true, // disable stdout/file
+		CustomWriters:         []io.Writer{sink},
+		Format:                FormatJSON,
+		DefaultFields:         map[string]any{"app": "goliath"},
+	}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
@@ -328,12 +328,12 @@ func TestConcurrent_ContextLevelsAreIsolated(t *testing.T) {
 	// Global is Error. Half the goroutines use a Debug context (their debug
 	// lines should appear); the other half log debug with no context (dropped).
 	sink := &lockedBuffer{}
-	if err := Init(
-		WithLevel(LevelError),
-		WithWriters(),
-		WithWriter(sink),
-		WithFormat(FormatJSON),
-	); err != nil {
+	if err := Init(Config{
+		Level:                 LevelError,
+		DisableBuiltinWriters: true,
+		CustomWriters:         []io.Writer{sink},
+		Format:                FormatJSON,
+	}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 

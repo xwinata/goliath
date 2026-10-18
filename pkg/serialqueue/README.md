@@ -13,7 +13,7 @@ One job runs while others wait in a bounded FIFO backlog. A job submitted when t
 The zero value is not usable; create a Queue with New.
 
 ```
-q := serialqueue.New(serialqueue.WithCapacity(10))
+q := serialqueue.New(serialqueue.Config{Capacity: 10})
 q.Run(func() { doWork() })
 ```
 
@@ -26,12 +26,9 @@ q.Run(func() { stepA(); stepB() })
 ## Index
 
 - [Constants](<#constants>)
-- [type Option](<#Option>)
-  - [func WithCapacity\(n int\) Option](<#WithCapacity>)
-  - [func WithPanicHandler\(fn func\(recovered any\)\) Option](<#WithPanicHandler>)
-  - [func WithTimeout\(d time.Duration\) Option](<#WithTimeout>)
+- [type Config](<#Config>)
 - [type Queue](<#Queue>)
-  - [func New\(opts ...Option\) \*Queue](<#New>)
+  - [func New\(cfg Config\) \*Queue](<#New>)
   - [func \(q \*Queue\) IsRunning\(\) bool](<#Queue.IsRunning>)
   - [func \(q \*Queue\) IsWaiting\(\) bool](<#Queue.IsWaiting>)
   - [func \(q \*Queue\) Run\(job func\(\)\) Result](<#Queue.Run>)
@@ -43,47 +40,35 @@ q.Run(func() { stepA(); stepB() })
 
 ## Constants
 
-<a name="DefaultCapacity"></a>DefaultCapacity is the backlog size used when WithCapacity is not set.
+<a name="DefaultCapacity"></a>DefaultCapacity is the backlog size used when Config.Capacity is zero.
 
 ```go
 const DefaultCapacity = 5
 ```
 
-<a name="Option"></a>
-## type [Option](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/options.go#L13>)
+<a name="Config"></a>
+## type [Config](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/options.go#L8-L23>)
 
-Option configures a Queue in New.
-
-```go
-type Option func(*options)
-```
-
-<a name="WithCapacity"></a>
-### func [WithCapacity](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/options.go#L18>)
+Config customizes a Queue created by New. The zero value is valid: Capacity \<= 0 selects DefaultCapacity, a zero Timeout waits indefinitely, and a nil PanicHandler recovers panicking jobs silently.
 
 ```go
-func WithCapacity(n int) Option
+type Config struct {
+    // Capacity is how many jobs may wait behind the running one before further
+    // submissions are rejected. The running job does not count against it.
+    // Values below 1 are clamped to 1; zero selects DefaultCapacity.
+    Capacity int
+
+    // Timeout bounds how long a queued job waits for the running one to finish.
+    // If it expires first, the queued job is discarded. Zero waits
+    // indefinitely.
+    Timeout time.Duration
+
+    // PanicHandler, when non-nil, is invoked with the recovered value when a
+    // job panics. Without it, a panicking job is recovered silently so the
+    // queue keeps running.
+    PanicHandler func(recovered any)
+}
 ```
-
-WithCapacity sets how many jobs may wait behind the running one before further submissions are rejected. The running job does not count against it. Values below 1 are clamped to 1. The default is DefaultCapacity.
-
-<a name="WithPanicHandler"></a>
-### func [WithPanicHandler](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/options.go#L39>)
-
-```go
-func WithPanicHandler(fn func(recovered any)) Option
-```
-
-WithPanicHandler sets a callback invoked with the recovered value when a job panics. Without it, a panicking job is recovered silently so the queue keeps running.
-
-<a name="WithTimeout"></a>
-### func [WithTimeout](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/options.go#L30>)
-
-```go
-func WithTimeout(d time.Duration) Option
-```
-
-WithTimeout bounds how long a queued job waits for the running one to finish. If it expires first, the queued job is discarded. Zero \(the default\) waits indefinitely.
 
 <a name="Queue"></a>
 ## type [Queue](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L57-L66>)
@@ -97,16 +82,16 @@ type Queue struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L69>)
+### func [New](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L70>)
 
 ```go
-func New(opts ...Option) *Queue
+func New(cfg Config) *Queue
 ```
 
-New creates a Queue configured by the given options.
+New creates a Queue configured by cfg. A zero\-value Config yields a queue with DefaultCapacity, no timeout, and silent panic recovery.
 
 <a name="Queue.IsRunning"></a>
-### func \(\*Queue\) [IsRunning](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L186>)
+### func \(\*Queue\) [IsRunning](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L185>)
 
 ```go
 func (q *Queue) IsRunning() bool
@@ -115,7 +100,7 @@ func (q *Queue) IsRunning() bool
 IsRunning reports whether a job is currently running.
 
 <a name="Queue.IsWaiting"></a>
-### func \(\*Queue\) [IsWaiting](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L194>)
+### func \(\*Queue\) [IsWaiting](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L193>)
 
 ```go
 func (q *Queue) IsWaiting() bool
@@ -124,25 +109,25 @@ func (q *Queue) IsWaiting() bool
 IsWaiting reports whether at least one live job is queued behind the running one.
 
 <a name="Queue.Run"></a>
-### func \(\*Queue\) [Run](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L86>)
+### func \(\*Queue\) [Run](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L84>)
 
 ```go
 func (q *Queue) Run(job func()) Result
 ```
 
-Run submits a job and returns immediately. The job runs once earlier submissions finish. It returns Rejected if the backlog is full or job is nil. To run several jobs as one unit, wrap them in a single func. If the queue was created with WithTimeout, the wait is bounded by that timeout.
+Run submits a job and returns immediately. The job runs once earlier submissions finish. It returns Rejected if the backlog is full or job is nil. To run several jobs as one unit, wrap them in a single func. If the queue was created with a Config.Timeout, the wait is bounded by that timeout.
 
 <a name="Queue.RunContext"></a>
-### func \(\*Queue\) [RunContext](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L94>)
+### func \(\*Queue\) [RunContext](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L93>)
 
 ```go
 func (q *Queue) RunContext(ctx context.Context, job func()) Result
 ```
 
-RunContext behaves like Run but also drops the job if ctx is canceled or its deadline passes before it starts. A per\-queue timeout from WithTimeout still applies; whichever fires first wins. Cancellation only affects a job still waiting, never one that has already started.
+RunContext behaves like Run but also drops the job if ctx is canceled or its deadline passes before it starts. A per\-queue timeout from Config.Timeout still applies; whichever fires first wins. Cancellation only affects a job still waiting, never one that has already started.
 
 <a name="Queue.Waiting"></a>
-### func \(\*Queue\) [Waiting](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L203>)
+### func \(\*Queue\) [Waiting](<https://github.com/xwinata/goliath/blob/main/pkg/serialqueue/serialqueue.go#L202>)
 
 ```go
 func (q *Queue) Waiting() int

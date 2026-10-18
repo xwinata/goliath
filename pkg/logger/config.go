@@ -82,7 +82,7 @@ func ParseLevel(v any) Level {
 type Writer int
 
 const (
-	// WriterStdout writes to stdout. Use WithFormat to choose JSON (default,
+	// WriterStdout writes to stdout. Set Config.Format to choose JSON (default,
 	// for containers) or text (human-readable, for development).
 	WriterStdout Writer = iota
 	// WriterFile writes to a daily-rotated file using the configured format.
@@ -129,64 +129,88 @@ func defaultConfig() config {
 	}
 }
 
-// Option customizes the logger via Init.
-type Option func(*config)
+// Config customizes the logger via Init. The zero value is valid and yields the
+// defaults: Info level, JSON format, output to stdout only, and the default
+// daily-rotated file settings (used only when WriterFile is selected).
+type Config struct {
+	// Level is the minimum log level. The zero value is LevelInfo.
+	Level Level
 
-// WithLevel sets the minimum log level.
-func WithLevel(l Level) Option { return func(c *config) { c.level = l } }
+	// Format is the encoding used by all writers. The zero value is FormatJSON.
+	Format Format
 
-// WithFormat sets the encoding used by all writers (JSON or text).
-func WithFormat(f Format) Option { return func(c *config) { c.format = f } }
+	// Writers selects the built-in output destinations. When nil, the default
+	// (WriterStdout) is used. To emit to custom writers only, leave this nil
+	// and set DisableBuiltinWriters.
+	Writers []Writer
 
-// WithWriters sets the built-in output destinations, replacing the default
-// (WriterStdout). Pass no arguments to disable the built-in destinations
-// entirely, e.g. when routing output solely through WithWriter.
-func WithWriters(w ...Writer) Option {
-	return func(c *config) {
-		c.writers = w
-	}
+	// DisableBuiltinWriters drops the built-in destinations entirely, so output
+	// goes only to CustomWriters. Use it when routing logs solely to a custom
+	// sink (or a buffer in tests). It takes precedence over Writers.
+	DisableBuiltinWriters bool
+
+	// CustomWriters are arbitrary io.Writer destinations that receive output in
+	// the configured format, alongside any built-in Writers. Nil entries are
+	// ignored.
+	CustomWriters []io.Writer
+
+	// DefaultFields are attached to every log entry. The zero value adds none.
+	DefaultFields map[string]any
+
+	// FileDir is the directory for the daily-rotated file writer. Empty keeps
+	// the default ("./logs/"). Used only when WriterFile is selected.
+	FileDir string
+
+	// FilePrefix is the base file name for the file writer (a date and .log
+	// suffix are appended). Empty keeps the default ("app" or "app-<host>").
+	FilePrefix string
+
+	// FileBufferKB tunes the file writer's buffer size in KB. Values <= 0 keep
+	// the default (64).
+	FileBufferKB int
+
+	// FileFlushSeconds tunes the file writer's flush interval in seconds.
+	// Values <= 0 keep the default (1).
+	FileFlushSeconds int
 }
 
-// WithWriter adds an arbitrary io.Writer as an output destination, using the
-// configured format. It can be combined with WriterStdout and WriterFile and is
-// useful for routing logs to a custom sink (or a buffer in tests).
-func WithWriter(w io.Writer) Option {
-	return func(c *config) {
+// resolved folds c into the internal config, applying defaults and the
+// defensive validation the constructor relies on (ignore empty/nil, clamp
+// non-positive file settings, drop nil custom writers).
+func (c Config) resolved() config {
+	cfg := defaultConfig()
+
+	cfg.level = c.Level
+	cfg.format = c.Format
+	cfg.defaultFields = c.DefaultFields
+
+	switch {
+	case c.DisableBuiltinWriters:
+		cfg.writers = nil
+	case c.Writers != nil:
+		cfg.writers = c.Writers
+	}
+
+	for _, w := range c.CustomWriters {
 		if w != nil {
-			c.customWriters = append(c.customWriters, w)
+			cfg.customWriters = append(cfg.customWriters, w)
 		}
 	}
-}
 
-// WithDefaultFields sets fields attached to every log entry.
-func WithDefaultFields(fields map[string]any) Option {
-	return func(c *config) { c.defaultFields = fields }
-}
-
-// WithFile configures the daily-rotated file writer. dir is the directory,
-// prefix is the base file name (a date and .log suffix are appended).
-func WithFile(dir, prefix string) Option {
-	return func(c *config) {
-		if dir != "" {
-			c.fileDir = dir
-		}
-		if prefix != "" {
-			c.filePrefix = prefix
-		}
+	if c.FileDir != "" {
+		cfg.fileDir = c.FileDir
 	}
-}
-
-// WithFileBuffer tunes the file writer's buffer size (KB) and flush interval
-// (seconds). Non-positive values keep the defaults.
-func WithFileBuffer(bufKB, flushSeconds int) Option {
-	return func(c *config) {
-		if bufKB > 0 {
-			c.fileBufKB = bufKB
-		}
-		if flushSeconds > 0 {
-			c.fileFlushInterval = flushSeconds
-		}
+	if c.FilePrefix != "" {
+		cfg.filePrefix = c.FilePrefix
 	}
+	if c.FileBufferKB > 0 {
+		cfg.fileBufKB = c.FileBufferKB
+	}
+	if c.FileFlushSeconds > 0 {
+		cfg.fileFlushInterval = c.FileFlushSeconds
+	}
+
+	return cfg
 }
 
 // buildState assembles the slog logger and resources from config.

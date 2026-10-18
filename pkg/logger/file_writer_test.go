@@ -61,13 +61,15 @@ func TestFileWriter_CloseFlushes(t *testing.T) {
 
 func TestBuildState_FileWriterIntegration(t *testing.T) {
 	dir := t.TempDir()
-	if err := Init(
-		WithLevel(LevelInfo),
-		WithWriters(WriterFile),
-		WithFile(dir, "goliath"),
-		WithFileBuffer(1, 3600),
-		WithFormat(FormatJSON),
-	); err != nil {
+	if err := Init(Config{
+		Level:            LevelInfo,
+		Writers:          []Writer{WriterFile},
+		FileDir:          dir,
+		FilePrefix:       "goliath",
+		FileBufferKB:     1,
+		FileFlushSeconds: 3600,
+		Format:           FormatJSON,
+	}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 

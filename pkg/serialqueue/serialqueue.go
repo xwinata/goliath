@@ -6,7 +6,7 @@
 //
 // The zero value is not usable; create a Queue with New.
 //
-//	q := serialqueue.New(serialqueue.WithCapacity(10))
+//	q := serialqueue.New(serialqueue.Config{Capacity: 10})
 //	q.Run(func() { doWork() })
 //
 // Each submission is a single job. To run several as one unit, wrap them:
@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// DefaultCapacity is the backlog size used when WithCapacity is not set.
+// DefaultCapacity is the backlog size used when Config.Capacity is zero.
 const DefaultCapacity = 5
 
 // Result reports the outcome of submitting a job.
@@ -65,30 +65,29 @@ type Queue struct {
 	onPanic  func(any)
 }
 
-// New creates a Queue configured by the given options.
-func New(opts ...Option) *Queue {
-	cfg := options{capacity: DefaultCapacity}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
+// New creates a Queue configured by cfg. A zero-value Config yields a queue
+// with DefaultCapacity, no timeout, and silent panic recovery.
+func New(cfg Config) *Queue {
+	rc := cfg.resolved()
 
 	return &Queue{
-		capacity: cfg.capacity,
-		timeout:  cfg.timeout,
-		onPanic:  cfg.onPanic,
+		capacity: rc.capacity,
+		timeout:  rc.timeout,
+		onPanic:  rc.onPanic,
 	}
 }
 
 // Run submits a job and returns immediately. The job runs once earlier
 // submissions finish. It returns Rejected if the backlog is full or job is nil.
 // To run several jobs as one unit, wrap them in a single func. If the queue was
-// created with WithTimeout, the wait is bounded by that timeout.
+// created with a Config.Timeout, the wait is bounded by that timeout.
 func (q *Queue) Run(job func()) Result {
 	return q.RunContext(context.Background(), job)
 }
 
 // RunContext behaves like Run but also drops the job if ctx is canceled or its
-// deadline passes before it starts. A per-queue timeout from WithTimeout still
+// deadline passes before it starts. A per-queue timeout from Config.Timeout
+// still
 // applies; whichever fires first wins. Cancellation only affects a job still
 // waiting, never one that has already started.
 func (q *Queue) RunContext(ctx context.Context, job func()) Result {

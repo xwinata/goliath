@@ -1,4 +1,4 @@
-package httphandler
+package healthcheck
 
 import (
 	"context"
@@ -10,10 +10,10 @@ import (
 )
 
 // newServer builds a test server with the handler mounted on a fresh mux.
-func newServer(t *testing.T, opts ...Option) *httptest.Server {
+func newServer(t *testing.T, cfg Config) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	New(opts...).Register(mux)
+	New(cfg).Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -36,9 +36,9 @@ func get(t *testing.T, url string) (int, response) {
 }
 
 func TestHealthAlwaysOK(t *testing.T) {
-	srv := newServer(t)
+	srv := newServer(t, Config{})
 
-	code, body := get(t, srv.URL+DefaultHealthPath)
+	code, body := get(t, srv.URL+defaultHealthPath)
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", code, http.StatusOK)
 	}
@@ -48,9 +48,9 @@ func TestHealthAlwaysOK(t *testing.T) {
 }
 
 func TestReadinessNoChecksIsOK(t *testing.T) {
-	srv := newServer(t)
+	srv := newServer(t, Config{})
 
-	code, body := get(t, srv.URL+DefaultReadinessPath)
+	code, body := get(t, srv.URL+defaultReadinessPath)
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", code, http.StatusOK)
 	}
@@ -60,11 +60,13 @@ func TestReadinessNoChecksIsOK(t *testing.T) {
 }
 
 func TestReadinessPassingCheck(t *testing.T) {
-	srv := newServer(t, WithReadinessCheck("db", func(context.Context) error {
-		return nil
-	}))
+	srv := newServer(t, Config{
+		ReadinessChecks: map[string]Check{
+			"db": func(context.Context) error { return nil },
+		},
+	})
 
-	code, body := get(t, srv.URL+DefaultReadinessPath)
+	code, body := get(t, srv.URL+defaultReadinessPath)
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", code, http.StatusOK)
 	}
@@ -74,16 +76,16 @@ func TestReadinessPassingCheck(t *testing.T) {
 }
 
 func TestReadinessFailingCheck(t *testing.T) {
-	srv := newServer(t,
-		WithReadinessCheck("db", func(context.Context) error {
-			return errors.New("connection refused")
-		}),
-		WithReadinessCheck("cache", func(context.Context) error {
-			return nil
-		}),
-	)
+	srv := newServer(t, Config{
+		ReadinessChecks: map[string]Check{
+			"db": func(context.Context) error {
+				return errors.New("connection refused")
+			},
+			"cache": func(context.Context) error { return nil },
+		},
+	})
 
-	code, body := get(t, srv.URL+DefaultReadinessPath)
+	code, body := get(t, srv.URL+defaultReadinessPath)
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", code, http.StatusServiceUnavailable)
 	}
@@ -99,11 +101,15 @@ func TestReadinessFailingCheck(t *testing.T) {
 }
 
 func TestLivenessFailingCheck(t *testing.T) {
-	srv := newServer(t, WithLivenessCheck("deadlock", func(context.Context) error {
-		return errors.New("stalled")
-	}))
+	srv := newServer(t, Config{
+		LivenessChecks: map[string]Check{
+			"deadlock": func(context.Context) error {
+				return errors.New("stalled")
+			},
+		},
+	})
 
-	code, body := get(t, srv.URL+DefaultLivenessPath)
+	code, body := get(t, srv.URL+defaultLivenessPath)
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", code, http.StatusServiceUnavailable)
 	}
@@ -113,11 +119,11 @@ func TestLivenessFailingCheck(t *testing.T) {
 }
 
 func TestCustomPaths(t *testing.T) {
-	srv := newServer(t,
-		WithHealthPath("/health"),
-		WithReadinessPath("/ready"),
-		WithLivenessPath("/live"),
-	)
+	srv := newServer(t, Config{
+		HealthPath:    "/health",
+		ReadinessPath: "/ready",
+		LivenessPath:  "/live",
+	})
 
 	for _, path := range []string{"/health", "/ready", "/live"} {
 		code, _ := get(t, srv.URL+path)
@@ -127,7 +133,7 @@ func TestCustomPaths(t *testing.T) {
 	}
 
 	// Default paths should no longer be registered.
-	resp, err := http.Get(srv.URL + DefaultHealthPath)
+	resp, err := http.Get(srv.URL + defaultHealthPath)
 	if err != nil {
 		t.Fatalf("GET default health: %v", err)
 	}
@@ -138,11 +144,11 @@ func TestCustomPaths(t *testing.T) {
 }
 
 func TestNonGETRejected(t *testing.T) {
-	srv := newServer(t)
+	srv := newServer(t, Config{})
 
-	resp, err := http.Post(srv.URL+DefaultHealthPath, "text/plain", http.NoBody)
+	resp, err := http.Post(srv.URL+defaultHealthPath, "text/plain", http.NoBody)
 	if err != nil {
-		t.Fatalf("POST %s: %v", DefaultHealthPath, err)
+		t.Fatalf("POST %s: %v", defaultHealthPath, err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
@@ -152,12 +158,16 @@ func TestNonGETRejected(t *testing.T) {
 
 func TestReadinessCheckReceivesContext(t *testing.T) {
 	var gotCtx bool
-	srv := newServer(t, WithReadinessCheck("ctx", func(ctx context.Context) error {
-		gotCtx = ctx != nil
-		return nil
-	}))
+	srv := newServer(t, Config{
+		ReadinessChecks: map[string]Check{
+			"ctx": func(ctx context.Context) error {
+				gotCtx = ctx != nil
+				return nil
+			},
+		},
+	})
 
-	get(t, srv.URL+DefaultReadinessPath)
+	get(t, srv.URL+defaultReadinessPath)
 	if !gotCtx {
 		t.Fatal("check did not receive a non-nil context")
 	}

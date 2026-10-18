@@ -1,4 +1,4 @@
-// Package httphandler registers a small set of common HTTP endpoints on a
+// Package healthcheck registers a small set of common HTTP endpoints on a
 // standard library *http.ServeMux. It has no third-party dependencies.
 //
 // It exposes three probes, each on its own path so orchestrators such as
@@ -16,18 +16,20 @@
 //
 // # Usage
 //
-//	h := httphandler.New(
-//	    httphandler.WithReadinessCheck("db", func(ctx context.Context) error {
-//	        return db.PingContext(ctx)
-//	    }),
-//	)
+//	h := healthcheck.New(healthcheck.Config{
+//	    ReadinessChecks: map[string]healthcheck.Check{
+//	        "db": func(ctx context.Context) error {
+//	            return db.PingContext(ctx)
+//	        },
+//	    },
+//	})
 //	mux := http.NewServeMux()
 //	h.Register(mux)
 //	http.ListenAndServe(":8080", mux)
 //
 // Register may target any *http.ServeMux, so these endpoints can share a mux
 // with an application's own routes.
-package httphandler
+package healthcheck
 
 import (
 	"context"
@@ -35,15 +37,15 @@ import (
 	"net/http"
 )
 
-// Default paths served by a Handler. Override them with WithHealthPath,
-// WithReadinessPath, and WithLivenessPath.
+// Default paths served by a Handler, overridable with Config.HealthPath,
+// Config.ReadinessPath, and Config.LivenessPath.
 const (
-	// DefaultHealthPath is the path served for the simple health check.
-	DefaultHealthPath = "/healthcheck"
-	// DefaultReadinessPath is the path served for the readiness probe.
-	DefaultReadinessPath = "/readyz"
-	// DefaultLivenessPath is the path served for the liveness probe.
-	DefaultLivenessPath = "/livez"
+	// defaultHealthPath is the path served for the simple health check.
+	defaultHealthPath = "/healthcheck"
+	// defaultReadinessPath is the path served for the readiness probe.
+	defaultReadinessPath = "/readyz"
+	// defaultLivenessPath is the path served for the liveness probe.
+	defaultLivenessPath = "/livez"
 )
 
 // Status is the string reported in a probe response body.
@@ -73,25 +75,18 @@ type Handler struct {
 	liveness      map[string]Check
 }
 
-// New creates a Handler configured by the given options. With no options it
-// serves the default paths, a liveness probe with no checks, and a readiness
-// probe with no checks (both of which then simply confirm the process is up).
-func New(opts ...Option) *Handler {
-	cfg := options{
-		healthPath:    DefaultHealthPath,
-		readinessPath: DefaultReadinessPath,
-		livenessPath:  DefaultLivenessPath,
-	}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
+// New creates a Handler configured by cfg. A zero-value Config serves the
+// default paths with no readiness or liveness checks (so both probes simply
+// confirm the process is up).
+func New(cfg Config) *Handler {
+	rc := cfg.resolved()
 
 	return &Handler{
-		healthPath:    cfg.healthPath,
-		readinessPath: cfg.readinessPath,
-		livenessPath:  cfg.livenessPath,
-		readiness:     cfg.readiness,
-		liveness:      cfg.liveness,
+		healthPath:    rc.healthPath,
+		readinessPath: rc.readinessPath,
+		livenessPath:  rc.livenessPath,
+		readiness:     rc.readiness,
+		liveness:      rc.liveness,
 	}
 }
 
