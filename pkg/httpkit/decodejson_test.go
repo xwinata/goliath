@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"goliath/pkg/httpkit/handlers/stdwrapper"
+	"goliath/pkg/httpkit/stdwrapper"
 	"goliath/pkg/standarderror"
 )
 

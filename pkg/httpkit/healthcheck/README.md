@@ -3,7 +3,7 @@
 # healthcheck
 
 ```go
-import "goliath/pkg/httpkit/handlers/healthcheck"
+import "goliath/pkg/httpkit/healthcheck"
 ```
 
 Package healthcheck registers a small set of common HTTP endpoints on a standard library \*http.ServeMux. It has no third\-party dependencies.
@@ -41,10 +41,13 @@ Register may target any \*http.ServeMux, so these endpoints can share a mux with
   - [func New\(cfg Config\) \*Handler](<#New>)
   - [func \(h \*Handler\) Register\(mux \*http.ServeMux\)](<#Handler.Register>)
 - [type Status](<#Status>)
+  - [func \(s Status\) MarshalJSON\(\) \(\[\]byte, error\)](<#Status.MarshalJSON>)
+  - [func \(s Status\) String\(\) string](<#Status.String>)
+  - [func \(s \*Status\) UnmarshalJSON\(data \[\]byte\) error](<#Status.UnmarshalJSON>)
 
 
 <a name="Check"></a>
-## type [Check](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/healthcheck/options.go#L8>)
+## type [Check](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/options.go#L8>)
 
 Check reports whether a dependency is healthy. It returns nil when the dependency is ready and a non\-nil error describing the problem otherwise. The context carries the request deadline, so a Check should respect cancellation.
 
@@ -53,7 +56,7 @@ type Check func(ctx context.Context) error
 ```
 
 <a name="Config"></a>
-## type [Config](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/healthcheck/options.go#L13-L35>)
+## type [Config](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/options.go#L13-L35>)
 
 Config customizes a Handler created by New. The zero value is valid: empty paths fall back to their package defaults, and nil check maps mean the corresponding probe simply confirms the process is up.
 
@@ -84,7 +87,7 @@ type Config struct {
 ```
 
 <a name="Handler"></a>
-## type [Handler](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/healthcheck/healthcheck.go#L70-L76>)
+## type [Handler](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/healthcheck.go#L109-L115>)
 
 Handler serves the health, liveness, and readiness endpoints. Create one with New and wire it into a mux with Register.
 
@@ -95,7 +98,7 @@ type Handler struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/healthcheck/healthcheck.go#L81>)
+### func [New](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/healthcheck.go#L120>)
 
 ```go
 func New(cfg Config) *Handler
@@ -104,7 +107,7 @@ func New(cfg Config) *Handler
 New creates a Handler configured by cfg. A zero\-value Config serves the default paths with no readiness or liveness checks \(so both probes simply confirm the process is up\).
 
 <a name="Handler.Register"></a>
-### func \(\*Handler\) [Register](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/healthcheck/healthcheck.go#L95>)
+### func \(\*Handler\) [Register](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/healthcheck.go#L134>)
 
 ```go
 func (h *Handler) Register(mux *http.ServeMux)
@@ -113,12 +116,12 @@ func (h *Handler) Register(mux *http.ServeMux)
 Register mounts the Handler's endpoints on mux. It registers the health, liveness, and readiness paths, each restricted to GET.
 
 <a name="Status"></a>
-## type [Status](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/handlers/healthcheck/healthcheck.go#L52>)
+## type [Status](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/healthcheck.go#L54>)
 
-Status is the string reported in a probe response body.
+Status is the condition reported in a probe response body. Its zero value is StatusOK.
 
 ```go
-type Status string
+type Status int
 ```
 
 <a name="StatusOK"></a>
@@ -126,10 +129,37 @@ type Status string
 ```go
 const (
     // StatusOK is reported when a probe passes.
-    StatusOK Status = "ok"
+    StatusOK Status = iota
     // StatusUnavailable is reported when a probe fails.
-    StatusUnavailable Status = "unavailable"
+    StatusUnavailable
 )
 ```
+
+<a name="Status.MarshalJSON"></a>
+### func \(Status\) [MarshalJSON](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/healthcheck.go#L78>)
+
+```go
+func (s Status) MarshalJSON() ([]byte, error)
+```
+
+MarshalJSON encodes the Status as its String label so probe response bodies stay stable \(e.g. \{"status":"ok"\}\) regardless of the underlying int values.
+
+<a name="Status.String"></a>
+### func \(Status\) [String](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/healthcheck.go#L65>)
+
+```go
+func (s Status) String() string
+```
+
+String returns the lowercase label for s, e.g. "ok" or "unavailable". Unknown values render as "unknown".
+
+<a name="Status.UnmarshalJSON"></a>
+### func \(\*Status\) [UnmarshalJSON](<https://github.com/xwinata/goliath/blob/main/pkg/httpkit/healthcheck/healthcheck.go#L84>)
+
+```go
+func (s *Status) UnmarshalJSON(data []byte) error
+```
+
+UnmarshalJSON decodes a Status from its String label. An unrecognized label is an error so malformed input is not silently accepted.
 
 Generated by [gomarkdoc](<https://github.com/princjef/gomarkdoc>)

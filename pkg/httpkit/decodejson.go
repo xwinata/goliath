@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"goliath/pkg/httpkit/handlers/stdwrapper"
+	"goliath/pkg/httpkit/stdwrapper"
 	"goliath/pkg/standarderror"
 )
 

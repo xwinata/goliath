@@ -10,8 +10,8 @@ Package httpkit collects net/http presets for building services: ready\-made han
 
 The handlers live in subpackages:
 
-- handlers/healthcheck serves health, liveness, and readiness endpoints.
-- handlers/stdwrapper adapts application handlers to a standard request/response contract \(request ID, response envelope, error\-code header, logging, panic recovery\).
+- healthcheck serves health, liveness, and readiness endpoints.
+- stdwrapper adapts application handlers to a standard request/response contract \(request ID, response envelope, error\-code header, logging, panic recovery\).
 
 This package re\-exports the standard header names those handlers use so callers can reference them without importing a specific handler subpackage. They are grouped under the Headers namespace:
 

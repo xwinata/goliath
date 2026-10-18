@@ -34,6 +34,7 @@ package healthcheck
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -48,15 +49,53 @@ const (
 	defaultLivenessPath = "/livez"
 )
 
-// Status is the string reported in a probe response body.
-type Status string
+// Status is the condition reported in a probe response body. Its zero value is
+// StatusOK.
+type Status int
 
 const (
 	// StatusOK is reported when a probe passes.
-	StatusOK Status = "ok"
+	StatusOK Status = iota
 	// StatusUnavailable is reported when a probe fails.
-	StatusUnavailable Status = "unavailable"
+	StatusUnavailable
 )
+
+// String returns the lowercase label for s, e.g. "ok" or "unavailable". Unknown
+// values render as "unknown".
+func (s Status) String() string {
+	switch s {
+	case StatusOK:
+		return "ok"
+	case StatusUnavailable:
+		return "unavailable"
+	default:
+		return "unknown"
+	}
+}
+
+// MarshalJSON encodes the Status as its String label so probe response bodies
+// stay stable (e.g. {"status":"ok"}) regardless of the underlying int values.
+func (s Status) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+// UnmarshalJSON decodes a Status from its String label. An unrecognized label
+// is an error so malformed input is not silently accepted.
+func (s *Status) UnmarshalJSON(data []byte) error {
+	var label string
+	if err := json.Unmarshal(data, &label); err != nil {
+		return err
+	}
+	switch label {
+	case "ok":
+		*s = StatusOK
+	case "unavailable":
+		*s = StatusUnavailable
+	default:
+		return fmt.Errorf("healthcheck: unknown status %q", label)
+	}
+	return nil
+}
 
 // response is the JSON body returned by every probe. Failures is populated only
 // when one or more checks fail, mapping each failed check's name to its error.

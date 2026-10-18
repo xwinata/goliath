@@ -43,7 +43,7 @@ func TestHealthAlwaysOK(t *testing.T) {
 		t.Fatalf("status = %d, want %d", code, http.StatusOK)
 	}
 	if body.Status != StatusOK {
-		t.Fatalf("body status = %q, want %q", body.Status, StatusOK)
+		t.Fatalf("body status = %v, want %v", body.Status, StatusOK)
 	}
 }
 
@@ -55,7 +55,7 @@ func TestReadinessNoChecksIsOK(t *testing.T) {
 		t.Fatalf("status = %d, want %d", code, http.StatusOK)
 	}
 	if body.Status != StatusOK {
-		t.Fatalf("body status = %q, want %q", body.Status, StatusOK)
+		t.Fatalf("body status = %v, want %v", body.Status, StatusOK)
 	}
 }
 
@@ -90,7 +90,7 @@ func TestReadinessFailingCheck(t *testing.T) {
 		t.Fatalf("status = %d, want %d", code, http.StatusServiceUnavailable)
 	}
 	if body.Status != StatusUnavailable {
-		t.Fatalf("body status = %q, want %q", body.Status, StatusUnavailable)
+		t.Fatalf("body status = %v, want %v", body.Status, StatusUnavailable)
 	}
 	if got := body.Failures["db"]; got != "connection refused" {
 		t.Fatalf("db failure = %q, want %q", got, "connection refused")
@@ -170,5 +170,42 @@ func TestReadinessCheckReceivesContext(t *testing.T) {
 	get(t, srv.URL+defaultReadinessPath)
 	if !gotCtx {
 		t.Fatal("check did not receive a non-nil context")
+	}
+}
+
+func TestStatusString(t *testing.T) {
+	cases := map[Status]string{
+		StatusOK:          "ok",
+		StatusUnavailable: "unavailable",
+		Status(99):        "unknown",
+	}
+	for s, want := range cases {
+		if got := s.String(); got != want {
+			t.Fatalf("Status(%d).String() = %q, want %q", int(s), got, want)
+		}
+	}
+}
+
+func TestStatusJSONRoundTrip(t *testing.T) {
+	for _, s := range []Status{StatusOK, StatusUnavailable} {
+		data, err := json.Marshal(s)
+		if err != nil {
+			t.Fatalf("marshal %v: %v", s, err)
+		}
+		if want := `"` + s.String() + `"`; string(data) != want {
+			t.Fatalf("marshal %v = %s, want %s", s, data, want)
+		}
+
+		var got Status
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal %s: %v", data, err)
+		}
+		if got != s {
+			t.Fatalf("round-trip = %v, want %v", got, s)
+		}
+	}
+
+	if err := json.Unmarshal([]byte(`"bogus"`), new(Status)); err == nil {
+		t.Fatal("unmarshal of unknown label should error")
 	}
 }

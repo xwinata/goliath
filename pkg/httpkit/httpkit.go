@@ -4,8 +4,8 @@
 //
 // The handlers live in subpackages:
 //
-//   - handlers/healthcheck serves health, liveness, and readiness endpoints.
-//   - handlers/stdwrapper adapts application handlers to a standard
+//   - healthcheck serves health, liveness, and readiness endpoints.
+//   - stdwrapper adapts application handlers to a standard
 //     request/response contract (request ID, response envelope, error-code
 //     header, logging, panic recovery).
 //
@@ -22,7 +22,7 @@
 //	body, err := httpkit.DecodeJSON[CreateUser](r)
 package httpkit
 
-import "goliath/pkg/httpkit/handlers/stdwrapper"
+import "goliath/pkg/httpkit/stdwrapper"
 
 // headerNames groups the standard HTTP header names used across httpkit. The
 // single exported value Headers is the instance callers reference; the type is
